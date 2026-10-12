@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+* {
+  @apply border-gray-300;
+}
+
+body {
+  @apply mx-auto my-12 min-w-xs max-w-2xl text-slate-50 bg-neutral-900 font-[Nunito]; /* bg-neutral-800 bg-stone-900 bg-mist-900 */
+}
+
+.logo {
+  @apply mx-10 float-right;
+  animation: spin 62s linear infinite;
+  min-width: 4rem;
+  min-height: 4rem;
+  max-width: 16vw;
+  max-height: 16vh;
+}
+
+h1, h2 {
+  @apply p-1;
+}
+
+h1 {
+  @apply mx-6 text-3xl border-b-2 clear-both;
+}
+
+h2 {
+  @apply mx-6 text-lg italic;
+}
+
+a {
+  @apply text-blue-300;
+}
+
+p {
+  @apply mx-10 pb-2;
+}
+
+blockquote {
+  @apply mx-6 p-2 text-lg italic text-right font-[Gloria_Hallelujah];
+}
+
+footer {
+  @apply p-2 text-center opacity-70;
+}
