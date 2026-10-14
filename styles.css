@@ -30,7 +30,7 @@ h1 {
 }
 
 h2 {
-  @apply mx-6 text-lg italic;
+  @apply mt-2 mx-6 text-xl italic;
 }
 
 a {
@@ -45,6 +45,6 @@ blockquote {
   @apply mx-6 p-2 text-lg italic text-right font-[Gloria_Hallelujah];
 }
 
-footer {
-  @apply p-2 text-center opacity-70;
+footer p {
+  @apply mt-4 p-2 text-center opacity-70;
 }

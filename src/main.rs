@@ -87,21 +87,17 @@ async fn index() -> Markup {
                 " is my passion."
             }
             p {
-                "My teacher is "
                 a href="https://www.facebook.com/taichichuanboscofalconeria/" { "Rami Salo" }
                 " from "
                 a href="https://taichichuan.fi" { "Tai Chi Chuan ry" }
-                "."
-            }
-            p {
-                "And my master is "
+                " is my teacher, and "
                 a href="http://tungtaichi.com" { "Tung Chen Wei" }
-                "."
+                " is my master."
             }
             p {
                 "I also write "
                 a href="https://www.taichiwayfarer.com" { "a blog" }
-                " from my own personal learning experiences of the art."
+                " about my own learning experiences of the art."
             }
             h2 { "What do I offer?" }
             p {
@@ -109,7 +105,10 @@ async fn index() -> Markup {
                 so I offer private online classes."
             }
             p {
-                "One class is one hour long. Every class we relax mind and body,
+                "One class is one hour long and costs 30 €, but 4 classes is only 100 €."
+            }
+            p {
+                "Every class we relax mind and body,
                 improve balance and posture, and work on one or a few movements on "
                 a href="https://www.youtube.com/watch?v=mha0hp_cLHE" { "the slow set" }
                 "."
@@ -119,12 +118,14 @@ async fn index() -> Markup {
                 a rel="noreferrer" href="mailto:taichiwayfarer@gmail.com?subject=Tai%20Chi%20" {
                     "an email"
                 }
-                " to schedule a free 15 minutes introductory session!"
+                " to schedule a free introductory session!"
             }
+            /*
             h2 { "What would you need?" }
             p {
-                "You need enough space to move and make a video call at the same time."
+                "You need enough space to practice and make a video call at the same time."
             }
+            */
         },
     )
 }
