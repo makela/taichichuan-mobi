@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -23,6 +23,7 @@ async fn main() {
         .nest_service("/static", ServeDir::new("dist"))
         .route("/", get(index))
         .route_service("/favicon.ico", ServeFile::new("dist/favicon.ico"))
+        .fallback(handler_404)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
@@ -42,11 +43,11 @@ async fn main() {
         .unwrap();
 }
 
-async fn index() -> Markup {
+fn layout(title: &str, content: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         head {
-            title { "Timo Mäkelä - Software Entrepreneur" }
+            title { (title) }
             meta charset="utf-8";
             meta http-equiv="X-UA-Compatible" content="IE=edge";
             meta name="viewport" content="width=device-width, initial-scale=1";
@@ -65,38 +66,82 @@ async fn index() -> Markup {
                 blockquote { "When the student is ready, the teacher will appear" }
             }
             main {
-                h2 { "Who am I?" }
-                p {
-                    "My name is Timo and "
-                    a href="https://en.wikipedia.org/wiki/Tai_chi" { "Tai Chi" }
-                    " is my passion. My teacher is "
-                    a href="https://www.facebook.com/taichichuanboscofalconeria/" { "Rami Salo" }
-                    " from "
-                    a href="https://taichichuan.fi" { "Tai Chi Chuan ry" }
-                    " and my master is "
-                    a href="http://tungtaichi.com" { "Tung Chen Wei" }
-                    ". I also write "
-                    a href="https://www.taichiwayfarer.com" { "a blog" }
-                    " from my own personal learning experiences."
-                }
-                h2 { "What do I offer?" }
-                p {
-                    "My nomadic lifestyle does not support having a weekly class in one place,
-                    so I offer private online classes to new and old students of the art. Send me "
-                    a rel="noreferrer" href="mailto:taichiwayfarer@gmail.com?subject=Tai%20Chi%20" {
-                        "an email"
-                    }
-                    " to schedule a free 15 minutes introductory class!"
-                }
-                h2 { "What would you need?" }
-                p {
-                    "You will need to be able to make a video call (a smart phone or a laptop)
-                    and some room to practice a few movements at a time."
-                }
+                (content)
             }
             footer {
                 p { "Taiji-Timo © 2212553-3" }
             }
         }
     }
+}
+
+async fn index() -> Markup {
+    layout(
+        "Tai Chi Teaching Online",
+        &html! {
+            h2 { "Who am I?" }
+            img .profile src="/static/img/profile.jpg" alt="Timo";
+            p {
+                "My name is Timo and "
+                a href="https://en.wikipedia.org/wiki/Tai_chi" { "Tai Chi" }
+                " is my passion."
+            }
+            p {
+                "My teacher is "
+                a href="https://www.facebook.com/taichichuanboscofalconeria/" { "Rami Salo" }
+                " from "
+                a href="https://taichichuan.fi" { "Tai Chi Chuan ry" }
+                "."
+            }
+            p {
+                "And my master is "
+                a href="http://tungtaichi.com" { "Tung Chen Wei" }
+                "."
+            }
+            p {
+                "I also write "
+                a href="https://www.taichiwayfarer.com" { "a blog" }
+                " from my own personal learning experiences of the art."
+            }
+            h2 { "What do I offer?" }
+            p {
+                "My nomadic lifestyle does not support having a weekly class in any one place,
+                so I offer private online classes."
+            }
+            p {
+                "One class is one hour long. Every class we relax mind and body,
+                improve balance and posture, and work on one or a few movements on "
+                a href="https://www.youtube.com/watch?v=mha0hp_cLHE" { "the slow set" }
+                "."
+            }
+            p {
+                "Send me "
+                a rel="noreferrer" href="mailto:taichiwayfarer@gmail.com?subject=Tai%20Chi%20" {
+                    "an email"
+                }
+                " to schedule a free 15 minutes introductory session!"
+            }
+            h2 { "What would you need?" }
+            p {
+                "You need enough space to move and make a video call at the same time."
+            }
+        },
+    )
+}
+
+async fn handler_404() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        layout(
+            "Not Found",
+            &html! {
+                h2 { "Not Found" }
+                p {
+                    "The page you are looking for does not exist. Try "
+                    a href="/" { "front page" }
+                    " instead."
+                }
+            },
+        ),
+    )
 }

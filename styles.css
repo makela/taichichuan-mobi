@@ -17,6 +17,10 @@ body {
   max-height: 16vh;
 }
 
+img.profile {
+  @apply float-right mx-4 w-1/3 rounded-lg;
+}
+
 h1, h2 {
   @apply p-1;
 }
