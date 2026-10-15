@@ -81,7 +81,7 @@ fn layout(title: &str, content: &Markup) -> Markup {
 
 async fn index() -> Markup {
     layout(
-        "Tai Chi Teaching Online",
+        "Online Tai Chi Classes",
         &html! {
             h2 { "Who am I?" }
             img .profile src="/static/img/profile.jpg" alt="Profile picture";
