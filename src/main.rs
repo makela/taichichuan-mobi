@@ -103,7 +103,7 @@ async fn index() -> Markup {
                 a href="https://www.taichiwayfarer.com" { "a blog" }
                 " about my own learning experiences with the art."
             }
-            h2 { "What do I offer?" }
+            h2 { "What do I do?" }
             p {
                 "My nomadic lifestyle doesn't allow me to hold a weekly class in one place,
                 so I offer private online classes."

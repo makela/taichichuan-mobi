@@ -10,7 +10,7 @@ body {
 }
 
 .logo {
-  @apply mx-10 float-right;
+  @apply mx-9 float-right;
   animation: spin 62s linear infinite;
   min-width: 4rem;
   min-height: 4rem;
@@ -27,7 +27,7 @@ h1, h2 {
 }
 
 h1 {
-  @apply mx-6 text-3xl border-b-2 clear-both;
+  @apply mx-3 text-3xl border-b-2 clear-both;
 }
 
 h2 {
@@ -39,7 +39,7 @@ a {
 }
 
 p {
-  @apply mx-10 pb-2;
+  @apply mx-9 pb-2;
 }
 
 blockquote {
