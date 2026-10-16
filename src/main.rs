@@ -122,7 +122,7 @@ async fn index() -> Markup {
                 "For more advanced students, I can teach other sets and solo push hands, or we can focus on your wishes, such as practicing in a small space or learning the Chinese names of the movements."
             }
             p {
-                "Each class is one hour long and costs 30 €, or you can buy a package of four classes for 100 €."
+                "One class is one hour long. Classes are 30 € each, or 100 € for a package of four."
             }
             p {
                 "Send me "
