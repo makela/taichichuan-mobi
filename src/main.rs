@@ -86,37 +86,43 @@ async fn index() -> Markup {
             h2 { "Who am I?" }
             img .profile src="/static/img/profile.jpg" alt="Profile picture";
             p {
-                "My name is Timo and "
+                "My name is Timo, "
                 a href="https://en.wikipedia.org/wiki/Tai_chi" { "Tai Chi" }
-                " is my passion."
+                " is my passion, and I write "
+                a href="https://www.taichiwayfarer.com" { "a blog" }
+                " about my own experiences with the art."
             }
             p {
-                a href="https://www.facebook.com/taichichuanboscofalconeria/" { "Rami Salo" }
+                a href="https://www.facebook.com/taichichuanboscofalconeria/" {
+                    "Rami Salo"
+                }
                 " from "
                 a href="https://taichichuan.fi" { "Tai Chi Chuan ry" }
                 " is my teacher, and "
                 a href="http://tungtaichi.com" { "Tung Chen Wei" }
                 " is my master."
             }
+            h2 { "What do I offer?" }
             p {
-                "I also write "
-                a href="https://www.taichiwayfarer.com" { "a blog" }
-                " about my own learning experiences with the art."
-            }
-            h2 { "What do I do?" }
-            p {
-                "My nomadic lifestyle doesn't allow me to hold a weekly class in one place,
-                so I offer private online classes."
+                "My nomadic lifestyle doesn't allow me to hold a weekly class in one place, so I offer "
+                i { "private online classes" }
+                ". My classes can be an especially good option for you if you don't have a teacher nearby or cannot fit a local class into your schedule."
             }
             p {
-                "In every class, we relax the mind and body,
-                improve balance and posture, and work on one or a few movements from "
+                "I welcome both beginners and fellow "
+                i { "Tung-style" }
+                " practitioners. I am flexible, and we can personalize the classes to suit your needs. You only need enough space to practice and make a video call at the same time."
+            }
+            p {
+                "With new students, I first focus on relaxing the mind and body, improving balance and posture, and working on one or two movements from "
                 a href="https://www.youtube.com/watch?v=mha0hp_cLHE" { "the slow set" }
-                "."
+                " at a time."
             }
             p {
-                "Each class is one hour long and costs 30 €, or you can buy a package of
-                four classes for 100 €."
+                "For more advanced students, I can teach other sets and solo push hands, or we can focus on your wishes, such as practicing in a small space or learning the Chinese names of the movements."
+            }
+            p {
+                "Each class is one hour long and costs 30 €, or you can buy a package of four classes for 100 €."
             }
             p {
                 "Send me "
@@ -127,12 +133,6 @@ async fn index() -> Markup {
                 }
                 " to schedule a free introductory session!"
             }
-            /*
-            h2 { "What would you need?" }
-            p {
-                "You need enough space to practice and make a video call at the same time."
-            }
-            */
         },
     )
 }
