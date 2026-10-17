@@ -113,6 +113,7 @@ async fn index() -> Markup {
                 i { "Tung-style" }
                 " practitioners. I am flexible, and we can personalize the classes to suit your needs. You only need enough space to practice and make a video call at the same time."
             }
+            /*
             p {
                 "With new students, I first focus on relaxing the mind and body, improving balance and posture, and working on one or two movements from "
                 a href="https://www.youtube.com/watch?v=mha0hp_cLHE" { "the slow set" }
@@ -121,6 +122,7 @@ async fn index() -> Markup {
             p {
                 "For more advanced students, I can teach other sets and solo push hands, or we can focus on your wishes, such as practicing in a small space or learning the Chinese names of the movements."
             }
+            */
             p {
                 "One class is one hour long. Classes are 30 € each, or 100 € for a package of four."
             }
