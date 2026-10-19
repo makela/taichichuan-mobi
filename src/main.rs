@@ -109,7 +109,7 @@ async fn index() -> Markup {
                 " to beginners and fellow "
                 i { "Tung-style" }
                 " practitioners.
-                I am flexible, and we can personalize the classes to suit your needs.
+                I'm a flexible teacher, and we can personalize the classes to suit your needs.
                 You only need enough space to practice and make a video call at the same time."
             }
             p {
