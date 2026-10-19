@@ -104,16 +104,12 @@ async fn index() -> Markup {
             }
             h2 { "What do I do?" }
             p {
-                "I offer "
-                i { "private online classes" }
-                " to beginners and fellow "
-                i { "Tung-style" }
-                " practitioners.
-                I'm a flexible teacher, and we can personalize the classes to suit your needs.
+                "I offer private online classes to beginners and fellow Tung-style practitioners.
+                I'm a flexible teacher, and we can personalize my classes to suit your needs.
                 You only need enough space to practice and make a video call at the same time."
             }
             p {
-                "One class is one hour long. Classes are 30 € each, or 100 € for a package of four."
+                "One class is one hour long. Classes are 30 € each or 100 € for a package of four."
             }
             p {
                 "Send me "
