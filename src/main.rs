@@ -102,27 +102,16 @@ async fn index() -> Markup {
                 a href="http://tungtaichi.com" { "Tung Chen Wei" }
                 " is my master."
             }
-            h2 { "What do I offer?" }
+            h2 { "What do I do?" }
             p {
-                "My nomadic lifestyle doesn't allow me to hold a weekly class in one place, so I offer "
+                "I offer "
                 i { "private online classes" }
-                ". My classes can be an especially good option for you if you don't have a teacher nearby or cannot fit a local class into your schedule."
-            }
-            p {
-                "I welcome both beginners and fellow "
+                " to beginners and fellow "
                 i { "Tung-style" }
-                " practitioners. I am flexible, and we can personalize the classes to suit your needs. You only need enough space to practice and make a video call at the same time."
+                " practitioners.
+                I am flexible, and we can personalize the classes to suit your needs.
+                You only need enough space to practice and make a video call at the same time."
             }
-            /*
-            p {
-                "With new students, I first focus on relaxing the mind and body, improving balance and posture, and working on one or two movements from "
-                a href="https://www.youtube.com/watch?v=mha0hp_cLHE" { "the slow set" }
-                " at a time."
-            }
-            p {
-                "For more advanced students, I can teach other sets and solo push hands, or we can focus on your wishes, such as practicing in a small space or learning the Chinese names of the movements."
-            }
-            */
             p {
                 "One class is one hour long. Classes are 30 € each, or 100 € for a package of four."
             }

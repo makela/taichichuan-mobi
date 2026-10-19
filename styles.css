@@ -39,7 +39,7 @@ a {
 }
 
 p {
-  @apply mx-9 pb-2 text-justify;
+  @apply mx-9 pb-2;
 }
 
 blockquote {
