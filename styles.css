@@ -27,7 +27,7 @@ h1, h2 {
 }
 
 h1 {
-  @apply mx-3 text-3xl border-b-2 clear-both;
+  @apply mx-3 mb-2 text-3xl border-b-2 clear-both;
 }
 
 h2 {
@@ -43,9 +43,11 @@ p {
 }
 
 blockquote {
-  @apply mx-6 p-2 text-lg italic text-right font-[Gloria_Hallelujah];
+  @apply mx-6 text-lg italic text-right font-[Gloria_Hallelujah];
 }
 
+/*
 footer p {
   @apply mt-4 p-2 text-center opacity-70;
 }
+*/

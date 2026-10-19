@@ -61,20 +61,21 @@ fn layout(title: &str, content: &Markup) -> Markup {
         }
         body {
             header {
-                //p { "In English or suomeksi" }
                 (PreEscaped("
                 <div class='logo' role='banner'><svg viewBox='0 0 360 360'><circle r='180' transform='translate(180, 180)'></circle><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
                 "))
-                //h1 { "Tai Chi Teaching Online" } // Chuan
-                h1 { "Online Tai Chi Classes" } // Chuan
-                blockquote { "When the student is ready, the teacher will appear" }
+                h1 { "Online Tai Chi Classes" }
+                blockquote { "Practice Tai Chi. It's good for you." }
+                blockquote { "- Master Tung Chen Wei" }
             }
             main {
                 (content)
             }
+            /*
             footer {
                 p { "Taiji-Timo © 2212553-3" }
             }
+            */
         }
     }
 }
