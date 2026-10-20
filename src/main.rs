@@ -106,7 +106,7 @@ async fn index() -> Markup {
             h2 { "What do I do?" }
             p {
                 "I offer private online classes to beginners and fellow Tung-style practitioners.
-                I'm a flexible teacher, and we can personalize my classes to suit your needs.
+                My classes are flexible, and we can personalize them to suit your needs.
                 You only need enough space to practice and make a video call at the same time."
             }
             p {
