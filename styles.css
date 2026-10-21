@@ -34,7 +34,7 @@ h2 {
   @apply mt-2 mx-6 text-xl;
 }
 
-a {
+a:not(.active) {
   @apply text-blue-300;
 }
 
@@ -46,8 +46,6 @@ blockquote {
   @apply mx-6 text-lg italic text-right font-[Gloria_Hallelujah];
 }
 
-/*
-footer p {
+nav, footer p {
   @apply mt-4 p-2 text-center opacity-70;
 }
-*/
