@@ -145,7 +145,8 @@ impl Language {
 
 struct Translations {
     site_title: &'static str,
-    quote: &'static str,
+    quote_first_line: &'static str,
+    quote_second_line: &'static str,
     language_label: &'static str,
     who: &'static str,
     bio: &'static str,
@@ -171,7 +172,8 @@ impl Translations {
         match language {
             Language::En => Self {
                 site_title: "Online Tai Chi Classes",
-                quote: "Practice Tai Chi. It's good for you.",
+                quote_first_line: "Practice Tai Chi.",
+                quote_second_line: "It's good for you.",
                 language_label: "Language",
                 who: "Who am I?",
                 bio: "My name is Timo, and {tai_chi} is my passion. I write {blog} about my own experiences with the art.",
@@ -193,10 +195,11 @@ impl Translations {
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
-                quote: "Harjoittele taijia. Se on hyväksi sinulle.",
+                quote_first_line: "Harjoittele taijia.",
+                quote_second_line: "Se on hyväksi sinulle.",
                 language_label: "Kieli",
                 who: "Kuka olen?",
-                bio: "Nimeni on Timo, ja {tai_chi} on intohimoni. Kirjoitan {blog} omista kokemuksistani lajista.",
+                bio: "Nimeni on Timo, ja intohimoni on {tai_chi}. Kirjoitan {blog} omista kokemuksistani lajin parissa.",
                 blog_link: "blogia",
                 tai_chi: "taiji",
                 teachers: "{rami} on opettajani {association}:stä, ja mestarini on {master}.",
@@ -276,7 +279,7 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 link href="/static/styles.css" rel="stylesheet";
             }
             body {
-                nav .language-switch aria-label=(t.language_label) {
+                nav aria-label=(t.language_label) {
                     a href="/?lang=en" lang="en" class=(if language == Language::En { "active" } else { "" }) { "In English" }
                     " · "
                     a href="/?lang=fi" lang="fi" class=(if language == Language::Fi { "active" } else { "" }) { "suomeksi" }
@@ -286,7 +289,11 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                     <div class='logo' role='banner'><svg viewBox='0 0 360 360'><circle r='180' transform='translate(180, 180)'></circle><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
                     "))
                     h1 { (t.site_title) }
-                    blockquote { (t.quote) }
+                    blockquote {
+                        span.keep-together { (t.quote_first_line) }
+                        " "
+                        span.keep-together { (t.quote_second_line) }
+                    }
                     blockquote { "- Master Tung Chen Wei" }
                 }
                 main {

@@ -21,8 +21,6 @@
           buildInputs = [
             rust-bin.stable.latest.default
             just
-            watchman
-            tailwindcss_4
           ];
         };
       }
