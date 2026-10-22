@@ -161,6 +161,7 @@ struct Translations {
     price: &'static str,
     booking: &'static str,
     email_link: &'static str,
+    email_subject: &'static str,
     profile_alt: &'static str,
     not_found_title: &'static str,
     not_found: &'static str,
@@ -188,6 +189,7 @@ impl Translations {
                 price: "One class is one hour long. Classes are 30 € each or 100 € for a package of four.",
                 booking: "Send me {email} to schedule a free introductory session!",
                 email_link: "an email",
+                email_subject: "Interest in Tai Chi Classes",
                 profile_alt: "Profile picture",
                 not_found_title: "Not Found",
                 not_found: "The page you are looking for does not exist. Try {front_page} instead.",
@@ -211,6 +213,7 @@ impl Translations {
                 price: "Yksi oppitunti on yhden tunnin pituinen. Oppitunti maksaa 30 € tai neljän oppitunnin paketti 100 €.",
                 booking: "Varaa maksuton tutustumisvideopuhelu lähettämällä minulle {email}!",
                 email_link: "sähköpostia",
+                email_subject: "Kiinnostusta taijiopetuksesta",
                 profile_alt: "Profiilikuva",
                 not_found_title: "Sivua ei löydy",
                 not_found: "Etsimääsi sivua ei ole olemassa. Kokeile {front_page}.",
@@ -327,11 +330,9 @@ async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl I
         ("association", "https://taichichuan.fi", t.association_link),
         ("master", "http://tungtaichi.com", t.master_link),
     ];
-    let booking_links = [(
-        "email",
-        "mailto:taichiwayfarer@gmail.com?subject=Tai%20Chi%20Teaching",
-        t.email_link,
-    )];
+    let email_subject = urlencoding::encode(t.email_subject);
+    let mailto = format!("mailto:taichiwayfarer@gmail.com?subject={email_subject}");
+    let booking_links = [("email", mailto.as_str(), t.email_link)];
 
     (
         [(header::VARY, "Accept-Language")],
