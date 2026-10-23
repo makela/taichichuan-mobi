@@ -201,7 +201,7 @@ impl Translations {
                 quote_second_line: "Se on hyväksi sinulle.",
                 language_label: "Kieli",
                 who: "Kuka olen?",
-                bio: "Nimeni on Timo, ja intohimoni on {tai_chi}. Kirjoitan {blog} omista kokemuksistani lajin parissa.",
+                bio: "Nimeni on Timo, ja intohimoni on {tai_chi}. Kirjoitan {blog} omista kokemuksistani lajin tiimoilta.",
                 blog_link: "blogia",
                 tai_chi: "taiji",
                 teachers: "{rami} on opettajani {association}:stä, ja mestarini on {master}.",
