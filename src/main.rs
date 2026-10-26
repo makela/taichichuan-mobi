@@ -347,7 +347,7 @@ async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl I
                 p { (linked_markup(t.teachers, &teacher_links)) }
                 h2 { (t.what) }
                 p { (t.classes) }
-                p { (t.price) }
+                //p { (t.price) }
                 p { (linked_markup(t.booking, &booking_links)) }
             },
         ),
