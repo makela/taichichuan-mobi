@@ -294,7 +294,7 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 }
                 header {
                     (PreEscaped("
-                    <div class='logo' role='banner'><svg viewBox='0 0 360 360'><circle r='180' transform='translate(180, 180)'></circle><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
+                    <div class='logo'><svg viewBox='0 0 360 360' aria-hidden='true' focusable='false'><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
                     "))
                     h1 { (t.site_title) }
                     blockquote {
@@ -553,6 +553,11 @@ mod tests {
         assert!(body.starts_with("<!DOCTYPE html>"));
         assert!(body.contains(r#"<html lang="en">"#));
         assert!(body.contains("<title>Online Tai Chi Classes ☯ Taiji-Timo</title>"));
+        assert!(
+            !body.contains("role='banner'"),
+            "<header> is already the banner landmark"
+        );
+        assert!(body.contains("<svg viewBox='0 0 360 360' aria-hidden='true'"));
         Ok(())
     }
 
