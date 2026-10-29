@@ -520,6 +520,7 @@ dependencies = [
  "maud",
  "serde",
  "tokio",
+ "tower",
  "tower-http",
  "tower-livereload",
  "tracing",

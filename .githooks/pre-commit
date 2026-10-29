@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Runs formatting, lint and test checks before each commit.
+# Enabled by the dev shell (core.hooksPath = .githooks). Skip once with `git commit --no-verify`.
+set -euo pipefail
+
+# Re-run inside the flake dev shell when the toolchain is not on PATH (e.g. GUI git clients).
+if ! command -v cargo-clippy >/dev/null 2>&1 && [ -z "${IN_NIX_SHELL:-}" ]; then
+    exec nix develop --command "$0" "$@"
+fi
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check
+
+echo "pre-commit: cargo clippy"
+cargo clippy --all-targets --locked -- -D warnings
+
+echo "pre-commit: cargo test"
+cargo test --locked --quiet

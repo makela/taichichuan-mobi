@@ -1,11 +1,11 @@
 use axum::{
+    Router,
     extract::Query,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::get,
-    Router,
 };
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -26,16 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let app = Router::new()
-        .nest_service("/static", ServeDir::new("dist"))
-        .route("/", get(index))
-        .route_service("/favicon.ico", ServeFile::new("dist/favicon.ico"))
-        .fallback(handler_404)
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        );
+    let app = app();
     let app = if std::env::var("DEV").is_ok() {
         app.layer(LiveReloadLayer::new())
     } else {
@@ -60,6 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     tracing::info!(address = %local_addr, "HTTP server stopped");
     Ok(())
+}
+
+fn app() -> Router {
+    Router::new()
+        .nest_service("/static", ServeDir::new("dist"))
+        .route("/", get(index))
+        .route_service("/favicon.ico", ServeFile::new("dist/favicon.ico"))
+        .fallback(handler_404)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -158,6 +162,7 @@ struct Translations {
     master_link: &'static str,
     what: &'static str,
     classes: &'static str,
+    #[expect(dead_code, reason = "price is hidden on the page for now")]
     price: &'static str,
     booking: &'static str,
     email_link: &'static str,
@@ -373,4 +378,240 @@ async fn handler_404(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> 
             },
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::HeaderValue, http::Request};
+    use tower::ServiceExt;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn accept_language(value: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static(value));
+        headers
+    }
+
+    fn query(lang: Option<&str>) -> LanguageQuery {
+        LanguageQuery {
+            lang: lang.map(str::to_string),
+        }
+    }
+
+    fn assert_accept_language(value: &'static str, expected: Language) {
+        assert!(
+            Language::from_accept_language(&accept_language(value)) == expected,
+            "Accept-Language {value:?} should resolve to {:?}",
+            expected.code()
+        );
+    }
+
+    #[test]
+    fn accept_language_missing_defaults_to_english() {
+        assert!(Language::from_accept_language(&HeaderMap::new()) == Language::En);
+    }
+
+    #[test]
+    fn accept_language_picks_supported_language() {
+        assert_accept_language("fi", Language::Fi);
+        assert_accept_language("en", Language::En);
+        assert_accept_language("FI", Language::Fi);
+        assert_accept_language("fi-FI", Language::Fi);
+        assert_accept_language("fi-FI,fi;q=0.9,en;q=0.8", Language::Fi);
+        assert_accept_language("en-US,en;q=0.9,fi;q=0.8", Language::En);
+    }
+
+    #[test]
+    fn accept_language_prefers_highest_quality() {
+        assert_accept_language("en;q=0.5, fi;q=0.8", Language::Fi);
+        assert_accept_language("fi;q=0.3, en;q=0.4", Language::En);
+        assert_accept_language("fi ; q = 0.9 , en ; q = 0.1", Language::Fi);
+    }
+
+    #[test]
+    fn accept_language_breaks_ties_by_position() {
+        assert_accept_language("fi;q=0.8, en;q=0.8", Language::Fi);
+        assert_accept_language("en, fi", Language::En);
+    }
+
+    #[test]
+    fn accept_language_skips_unsupported_languages() {
+        assert_accept_language("sv,fi;q=0.5", Language::Fi);
+        assert_accept_language("de,sv", Language::En);
+    }
+
+    #[test]
+    fn accept_language_ignores_out_of_range_quality() {
+        assert_accept_language("fi;q=0", Language::En);
+        assert_accept_language("fi;q=0,en", Language::En);
+        assert_accept_language("fi;q=2", Language::En);
+        assert_accept_language("fi;q=-1", Language::En);
+    }
+
+    #[test]
+    fn accept_language_wildcard_resolves_to_english() {
+        assert_accept_language("*", Language::En);
+        assert_accept_language("*, fi;q=0.5", Language::En);
+        assert_accept_language("*;q=0.1, fi", Language::Fi);
+    }
+
+    #[test]
+    fn accept_language_treats_unparsable_quality_as_one() {
+        assert_accept_language("en;q=0.9, fi;q=abc", Language::Fi);
+    }
+
+    #[test]
+    fn accept_language_non_ascii_header_defaults_to_english() -> TestResult {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_bytes(b"fi\xff")?);
+        assert!(Language::from_accept_language(&headers) == Language::En);
+        Ok(())
+    }
+
+    #[test]
+    fn query_parameter_overrides_accept_language() {
+        let finnish = accept_language("fi");
+        let english = accept_language("en");
+        assert!(Language::from_request(&query(Some("en")), &finnish) == Language::En);
+        assert!(Language::from_request(&query(Some("fi")), &english) == Language::Fi);
+        assert!(Language::from_request(&query(Some("FI")), &english) == Language::Fi);
+        assert!(Language::from_request(&query(None), &finnish) == Language::Fi);
+    }
+
+    #[test]
+    fn unknown_query_language_falls_back_to_english_not_header() {
+        let finnish = accept_language("fi");
+        assert!(Language::from_request(&query(Some("sv")), &finnish) == Language::En);
+        assert!(Language::from_request(&query(Some("")), &finnish) == Language::En);
+    }
+
+    #[test]
+    fn linked_markup_replaces_placeholders_with_links() {
+        let links = [("a", "https://a.example", "A"), ("b", "/b", "B")];
+        let markup = linked_markup("x {a} y {b}{a} z", &links);
+        assert_eq!(
+            markup.into_string(),
+            r#"x <a href="https://a.example">A</a> y <a href="/b">B</a><a href="https://a.example">A</a> z"#
+        );
+    }
+
+    #[test]
+    fn linked_markup_without_placeholders_is_plain_text() {
+        assert_eq!(linked_markup("plain", &[]).into_string(), "plain");
+        assert_eq!(linked_markup("", &[]).into_string(), "");
+    }
+
+    #[test]
+    fn linked_markup_keeps_unknown_and_unclosed_placeholders() {
+        let links = [("a", "/a", "A")];
+        assert_eq!(
+            linked_markup("{missing} {a}", &links).into_string(),
+            r#"{missing} <a href="/a">A</a>"#
+        );
+        assert_eq!(
+            linked_markup("{a} {open", &links).into_string(),
+            r#"<a href="/a">A</a> {open"#
+        );
+    }
+
+    #[test]
+    fn linked_markup_escapes_text_href_and_label() {
+        let links = [("a", r#"/?x="1"&y"#, "<b>")];
+        assert_eq!(
+            linked_markup("<i>{a}</i>", &links).into_string(),
+            r#"&lt;i&gt;<a href="/?x=&quot;1&quot;&amp;y">&lt;b&gt;</a>&lt;/i&gt;"#
+        );
+    }
+
+    async fn get(
+        uri: &str,
+        accept_language: Option<&'static str>,
+    ) -> Result<(StatusCode, HeaderMap, String), Box<dyn std::error::Error>> {
+        let mut request = Request::builder().uri(uri);
+        if let Some(value) = accept_language {
+            request = request.header(header::ACCEPT_LANGUAGE, value);
+        }
+        let response = app().oneshot(request.body(Body::empty())?).await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        Ok((status, headers, String::from_utf8_lossy(&body).into_owned()))
+    }
+
+    #[tokio::test]
+    async fn index_renders_english_by_default() -> TestResult {
+        let (status, headers, body) = get("/", None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::VARY], "Accept-Language");
+        assert!(
+            headers[header::CONTENT_TYPE]
+                .to_str()?
+                .starts_with("text/html")
+        );
+        assert!(body.starts_with("<!DOCTYPE html>"));
+        assert!(body.contains(r#"<html lang="en">"#));
+        assert!(body.contains("<title>Online Tai Chi Classes ☯ Taiji-Timo</title>"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn index_renders_finnish_from_query_or_header() -> TestResult {
+        for (uri, accept) in [("/?lang=fi", None), ("/", Some("fi-FI,fi;q=0.9"))] {
+            let (status, _, body) = get(uri, accept).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains(r#"<html lang="fi">"#), "{uri} {accept:?}");
+            assert!(body.contains("Taijiopetusta"), "{uri} {accept:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn index_resolves_every_placeholder() -> TestResult {
+        for lang in ["en", "fi"] {
+            let (_, _, body) = get(&format!("/?lang={lang}"), None).await?;
+            assert!(!body.contains('{'), "unresolved placeholder in {lang} page");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn index_encodes_email_subject() -> TestResult {
+        let (_, _, body) = get("/?lang=fi", None).await?;
+        assert!(
+            body.contains(
+                "mailto:taichiwayfarer@gmail.com?subject=Kiinnostusta%20taijiopetuksesta"
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_path_renders_translated_404() -> TestResult {
+        let (status, headers, body) = get("/does-not-exist?lang=fi", None).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(headers[header::VARY], "Accept-Language");
+        assert!(body.contains("<title>Sivua ei löydy ☯ Taiji-Timo</title>"));
+        assert!(body.contains(r#"<a href="/?lang=fi">etusivua</a>"#));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_files_are_served() -> TestResult {
+        let (status, headers, _) = get("/static/styles.css", None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers[header::CONTENT_TYPE]
+                .to_str()?
+                .starts_with("text/css")
+        );
+
+        let (status, _, _) = get("/static/img/profile.jpg", None).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, _) = get("/favicon.ico", None).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
 }

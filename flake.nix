@@ -22,6 +22,9 @@
             rust-bin.stable.latest.default
             just
           ];
+          shellHook = ''
+            git config core.hooksPath .githooks
+          '';
         };
       }
     );
