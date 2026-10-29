@@ -45,7 +45,7 @@ a {
   color: var(--font-color);
 }
 
-a:not(.active) {
+a:not([aria-current]) {
   color: #93c5fd;
 }
 

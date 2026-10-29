@@ -288,9 +288,9 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
             }
             body {
                 nav aria-label=(t.language_label) {
-                    a href="/?lang=en" lang="en" class=(if language == Language::En { "active" } else { "" }) { "In English" }
+                    a href="/?lang=en" lang="en" aria-current=[(language == Language::En).then_some("page")] { "In English" }
                     " · "
-                    a href="/?lang=fi" lang="fi" class=(if language == Language::Fi { "active" } else { "" }) { "suomeksi" }
+                    a href="/?lang=fi" lang="fi" aria-current=[(language == Language::Fi).then_some("page")] { "suomeksi" }
                 }
                 header {
                     (PreEscaped("
@@ -568,6 +568,14 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains(r#"<html lang="fi">"#), "{uri} {accept:?}");
             assert!(body.contains("Taijiopetusta"), "{uri} {accept:?}");
+            assert!(
+                body.contains(r#"<a href="/?lang=fi" lang="fi" aria-current="page">"#),
+                "{uri} {accept:?}"
+            );
+            assert!(
+                body.contains(r#"<a href="/?lang=en" lang="en">"#),
+                "{uri} {accept:?}"
+            );
         }
         Ok(())
     }
