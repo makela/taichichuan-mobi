@@ -1,5 +1,6 @@
+# Restart on code and static file changes.
 watch:
-    DEV= cargo watch --no-gitignore -x "run"
+    DEV= watchexec --restart --watch src --watch dist --watch Cargo.toml -- cargo run
 
 release:
     cargo build --release

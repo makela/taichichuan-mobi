@@ -21,6 +21,7 @@
           buildInputs = [
             rust-bin.stable.latest.default
             just
+            watchexec
           ];
           shellHook = ''
             git config core.hooksPath .githooks
