@@ -1,12 +1,16 @@
+mod assets;
+
 use axum::{
     Router,
-    extract::Query,
-    http::{HeaderMap, StatusCode, header},
-    response::IntoResponse,
+    extract::{Query, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
+use std::path::Path;
 use tower_http::{
     services::{ServeDir, ServeFile},
     trace,
@@ -18,6 +22,9 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load .env before tracing so that RUST_LOG from it applies; variables
+    // already set in the environment take precedence over the file.
+    let dotenv = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -25,9 +32,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default(),
         )
         .init();
+    match dotenv {
+        Ok(path) => tracing::info!(path = %path.display(), "Loaded environment file"),
+        Err(error) if error.not_found() => {}
+        Err(error) => {
+            tracing::error!(%error, "Failed to load environment file");
+            return Err(error.into());
+        }
+    }
 
-    let app = app();
-    let app = if std::env::var("DEV").is_ok() {
+    let static_dir = std::env::var("STATIC_DIR").unwrap_or("dist".to_string());
+    let dev = env_flag("DEV");
+    let app = app(Path::new(&static_dir), dev);
+    let app = if dev {
         app.layer(LiveReloadLayer::new())
     } else {
         app
@@ -53,17 +70,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn app() -> Router {
+/// Set (even empty, like `DEV=` in the Justfile) and not "0" or "false".
+fn env_flag(name: &str) -> bool {
+    flag_enabled(std::env::var(name).ok().as_deref())
+}
+
+fn flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !matches!(value, "0" | "false"))
+}
+
+fn app(static_dir: &Path, dev: bool) -> Router {
+    assets::init(static_dir);
+    let static_files = Router::new()
+        .nest_service("/static", ServeDir::new(static_dir))
+        .route_service(
+            "/favicon.ico",
+            ServeFile::new(static_dir.join("favicon.ico")),
+        )
+        .layer(middleware::from_fn_with_state(dev, cache_static));
+
     Router::new()
-        .nest_service("/static", ServeDir::new("dist"))
+        .merge(static_files)
         .route("/", get(index))
-        .route_service("/favicon.ico", ServeFile::new("dist/favicon.ico"))
         .fallback(handler_404)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         )
+}
+
+/// Sets `Cache-Control` for static files. Versioned URLs (`?v=<hash>`, see
+/// `assets::url`) change with their content, so they are cached for a year;
+/// other files for a day. Errors are not cached, and nothing is in dev mode.
+async fn cache_static(State(dev): State<bool>, request: Request, next: Next) -> Response {
+    let versioned = request
+        .uri()
+        .path()
+        .strip_prefix("/static/")
+        .zip(
+            request
+                .uri()
+                .query()
+                .and_then(|query| query.strip_prefix("v=")),
+        )
+        .is_some_and(|(name, version)| assets::is_current(name, version));
+    let mut response = next.run(request).await;
+    if response.status().is_success() {
+        let value = if dev {
+            "no-cache"
+        } else if versioned {
+            "public, max-age=31536000, immutable"
+        } else {
+            "public, max-age=86400"
+        };
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    }
+    response
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -283,7 +348,7 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 meta charset="utf-8";
                 title { (page_title) " ☯ Taiji-Timo" }
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link href="/static/styles.css" rel="stylesheet";
+                link href=(assets::url("styles.css")) rel="stylesheet";
             }
             body {
                 nav aria-label=(t.language_label) {
@@ -348,7 +413,7 @@ async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl I
             t.site_title,
             &html! {
                 h2 { (t.who) }
-                img .profile src="/static/img/profile.jpg" alt=(t.profile_alt);
+                img .profile src=(assets::url("img/profile.jpg")) alt=(t.profile_alt);
                 p { (linked_markup(t.bio, &bio_links)) }
                 p { (linked_markup(t.teachers, &teacher_links)) }
                 h2 { (t.what) }
@@ -472,6 +537,16 @@ mod tests {
     }
 
     #[test]
+    fn flag_is_enabled_when_set_and_not_false() {
+        assert!(flag_enabled(Some("")));
+        assert!(flag_enabled(Some("1")));
+        assert!(flag_enabled(Some("true")));
+        assert!(!flag_enabled(None));
+        assert!(!flag_enabled(Some("0")));
+        assert!(!flag_enabled(Some("false")));
+    }
+
+    #[test]
     fn query_parameter_overrides_accept_language() {
         let finnish = accept_language("fi");
         let english = accept_language("en");
@@ -530,11 +605,19 @@ mod tests {
         uri: &str,
         accept_language: Option<&'static str>,
     ) -> Result<(StatusCode, HeaderMap, String), Box<dyn std::error::Error>> {
+        get_from(app(Path::new("dist"), false), uri, accept_language).await
+    }
+
+    async fn get_from(
+        app: Router,
+        uri: &str,
+        accept_language: Option<&'static str>,
+    ) -> Result<(StatusCode, HeaderMap, String), Box<dyn std::error::Error>> {
         let mut request = Request::builder().uri(uri);
         if let Some(value) = accept_language {
             request = request.header(header::ACCEPT_LANGUAGE, value);
         }
-        let response = app().oneshot(request.body(Body::empty())?).await?;
+        let response = app.oneshot(request.body(Body::empty())?).await?;
         let status = response.status();
         let headers = response.headers().clone();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
@@ -656,6 +739,71 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{font}");
             assert_eq!(headers[header::CONTENT_TYPE], "font/woff2", "{font}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn page_links_versioned_assets() -> TestResult {
+        let (_, _, body) = get("/", None).await?;
+        for name in ["styles.css", "img/profile.jpg"] {
+            let url = assets::url(name);
+            assert!(url.contains("?v="), "{url}");
+            assert!(body.contains(&format!(r#"="{url}""#)), "{url} not linked");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn versioned_static_files_are_cached_immutably() -> TestResult {
+        for name in ["styles.css", "img/profile.jpg"] {
+            let (status, headers, _) = get(&assets::url(name), None).await?;
+            assert_eq!(status, StatusCode::OK, "{name}");
+            assert_eq!(
+                headers[header::CACHE_CONTROL],
+                "public, max-age=31536000, immutable",
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unversioned_or_stale_static_files_are_cached_for_a_day() -> TestResult {
+        for uri in [
+            "/static/styles.css",
+            "/static/styles.css?v=0000000000000000",
+            "/static/fonts/nunito-latin.woff2",
+            "/favicon.ico",
+        ] {
+            let (status, headers, _) = get(uri, None).await?;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(
+                headers[header::CACHE_CONTROL],
+                "public, max-age=86400",
+                "{uri}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_static_files_and_pages_are_not_cached() -> TestResult {
+        for uri in ["/static/missing.css", "/", "/does-not-exist"] {
+            let (_, headers, _) = get(uri, None).await?;
+            assert!(!headers.contains_key(header::CACHE_CONTROL), "{uri}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dev_mode_disables_static_caching() -> TestResult {
+        let (_, headers, _) = get_from(
+            app(Path::new("dist"), true),
+            &assets::url("styles.css"),
+            None,
+        )
+        .await?;
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
         Ok(())
     }
 }
