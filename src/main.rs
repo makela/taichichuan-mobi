@@ -151,6 +151,7 @@ struct Translations {
     site_title: &'static str,
     quote_first_line: &'static str,
     quote_second_line: &'static str,
+    quote_attribution: &'static str,
     language_label: &'static str,
     who: &'static str,
     bio: &'static str,
@@ -180,6 +181,7 @@ impl Translations {
                 site_title: "Online Tai Chi Classes",
                 quote_first_line: "Practice Tai Chi.",
                 quote_second_line: "It's good for you.",
+                quote_attribution: "Master Tung Chen Wei",
                 language_label: "Language",
                 who: "Who am I?",
                 bio: "My name is Timo, and {tai_chi} is my passion. I write {blog} about my own experiences with the art.",
@@ -204,6 +206,7 @@ impl Translations {
                 site_title: "Taijiopetusta",
                 quote_first_line: "Harjoittele taijia.",
                 quote_second_line: "Se on hyväksi sinulle.",
+                quote_attribution: "Mestari Tung Chen Wei",
                 language_label: "Kieli",
                 who: "Kuka olen?",
                 bio: "Nimeni on Timo, ja intohimoni on {tai_chi}. Kirjoitan {blog} omista kokemuksistani lajin tiimoilta.",
@@ -293,12 +296,14 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                     <div class='logo'><svg viewBox='0 0 360 360' aria-hidden='true' focusable='false'><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
                     "))
                     h1 { (t.site_title) }
-                    blockquote {
-                        span.keep-together { (t.quote_first_line) }
-                        " "
-                        span.keep-together { (t.quote_second_line) }
+                    figure.quote {
+                        blockquote {
+                            span.keep-together { (t.quote_first_line) }
+                            " "
+                            span.keep-together { (t.quote_second_line) }
+                        }
+                        figcaption { "- " (t.quote_attribution) }
                     }
-                    blockquote { "- Master Tung Chen Wei" }
                 }
                 main {
                     (content)
@@ -549,6 +554,9 @@ mod tests {
         assert!(body.starts_with("<!DOCTYPE html>"));
         assert!(body.contains(r#"<head><meta charset="utf-8"><title>"#));
         assert!(!body.contains("X-UA-Compatible"));
+        assert!(
+            body.contains("</blockquote><figcaption>- Master Tung Chen Wei</figcaption></figure>")
+        );
         assert!(body.contains(r#"<html lang="en">"#));
         assert!(body.contains("<title>Online Tai Chi Classes ☯ Taiji-Timo</title>"));
         assert!(
@@ -570,6 +578,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains(r#"<html lang="fi">"#), "{uri} {accept:?}");
             assert!(body.contains("Taijiopetusta"), "{uri} {accept:?}");
+            assert!(
+                body.contains("<figcaption>- Mestari Tung Chen Wei</figcaption>"),
+                "{uri} {accept:?}"
+            );
             assert!(
                 body.contains(r#"<a href="/?lang=fi" lang="fi" aria-current="page">"#),
                 "{uri} {accept:?}"

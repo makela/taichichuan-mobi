@@ -147,7 +147,7 @@ p {
   line-height: 1.5;
 }
 
-blockquote {
+.quote {
   margin-inline: 1.5rem;
   font-family: "Gloria Hallelujah", cursive;
   font-size: 1.125rem;
