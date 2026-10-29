@@ -281,9 +281,6 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 meta charset="utf-8";
                 meta http-equiv="X-UA-Compatible" content="IE=edge";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="preconnect" href="https://fonts.googleapis.com";
-                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="true";
-                link href="https://fonts.googleapis.com/css2?family=Nunito&family=Electrolize&family=Gloria+Hallelujah&display=swap" rel="stylesheet";
                 link href="/static/styles.css" rel="stylesheet";
             }
             body {
@@ -558,6 +555,10 @@ mod tests {
             "<header> is already the banner landmark"
         );
         assert!(body.contains("<svg viewBox='0 0 360 360' aria-hidden='true'"));
+        assert!(
+            !body.contains("fonts.googleapis.com") && !body.contains("fonts.gstatic.com"),
+            "fonts are self-hosted"
+        );
         Ok(())
     }
 
@@ -625,6 +626,23 @@ mod tests {
 
         let (status, _, _) = get("/favicon.ico", None).await?;
         assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stylesheet_fonts_are_served() -> TestResult {
+        let (_, _, css) = get("/static/styles.css", None).await?;
+        let fonts: Vec<&str> = css
+            .split("url(")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(')').map(|(url, _)| url))
+            .collect();
+        assert_eq!(fonts.len(), 5, "{fonts:?}");
+        for font in fonts {
+            let (status, headers, _) = get(&format!("/static/{font}"), None).await?;
+            assert_eq!(status, StatusCode::OK, "{font}");
+            assert_eq!(headers[header::CONTENT_TYPE], "font/woff2", "{font}");
+        }
         Ok(())
     }
 }
