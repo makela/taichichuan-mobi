@@ -277,9 +277,8 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
         (DOCTYPE)
         html lang=(language.code()) {
             head {
-                title { (page_title) " ☯ Taiji-Timo" }
                 meta charset="utf-8";
-                meta http-equiv="X-UA-Compatible" content="IE=edge";
+                title { (page_title) " ☯ Taiji-Timo" }
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link href="/static/styles.css" rel="stylesheet";
             }
@@ -548,6 +547,8 @@ mod tests {
                 .starts_with("text/html")
         );
         assert!(body.starts_with("<!DOCTYPE html>"));
+        assert!(body.contains(r#"<head><meta charset="utf-8"><title>"#));
+        assert!(!body.contains("X-UA-Compatible"));
         assert!(body.contains(r#"<html lang="en">"#));
         assert!(body.contains("<title>Online Tai Chi Classes ☯ Taiji-Timo</title>"));
         assert!(
