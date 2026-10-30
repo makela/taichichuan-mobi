@@ -68,12 +68,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error
     })?;
     tracing::info!(address = %local_addr, "HTTP server listening");
-    if let Err(error) = axum::serve(listener, app.into_make_service()).await {
+    let serve = axum::serve(listener, app.into_make_service());
+    let result = if dev {
+        // Live reload keeps an event stream open for each browser tab, which a
+        // graceful shutdown would wait for, so dev restarts stop at once.
+        tokio::select! {
+            result = serve.into_future() => result,
+            () = shutdown_signal() => Ok(()),
+        }
+    } else {
+        // Finish requests in progress, e.g. when systemd stops the service.
+        serve.with_graceful_shutdown(shutdown_signal()).await
+    };
+    if let Err(error) = result {
         tracing::error!(address = %local_addr, %error, "HTTP server failed");
         return Err(error.into());
     }
     tracing::info!(address = %local_addr, "HTTP server stopped");
     Ok(())
+}
+
+/// Completes on Ctrl-C or, on Unix, SIGTERM (sent e.g. by systemd and watchexec).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "Failed to listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "Failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    tracing::info!("Shutdown signal received");
 }
 
 /// Set (even empty, like `DEV=` in the Justfile) and not "0" or "false".
