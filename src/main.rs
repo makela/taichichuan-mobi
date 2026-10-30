@@ -441,6 +441,10 @@ fn layout(
                 title { (page_title) " ☯ Taiji-Timo" }
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link href=(assets::url("styles.css")) rel="stylesheet";
+                // The .ico for browsers without SVG icons; sizes keeps others from preferring it.
+                link rel="icon" href="/favicon.ico" sizes="32x32";
+                link rel="icon" href=(assets::url("favicon.svg")) type="image/svg+xml";
+                link rel="apple-touch-icon" href=(assets::url("apple-touch-icon.png"));
                 // Fetch the first screen's fonts together with the stylesheet instead of
                 // after it. The URLs must match what styles.css resolves to.
                 @for font in PRELOADED_FONTS {
@@ -455,9 +459,8 @@ fn layout(
                     a href="/?lang=fi" lang="fi" aria-current=[(language == Language::Fi).then_some("page")] { "suomeksi" }
                 }
                 header {
-                    (PreEscaped("
-                    <div class='logo'><svg viewBox='0 0 360 360' aria-hidden='true' focusable='false'><circle fill='white' r='180' transform='translate(180, 180)'></circle><path transform='translate(180, 180) rotate(90)' d='M-180,0A180,180,0,1,1,180,0L0,0Z'></path><circle r='90' transform='translate(180, 270)'></circle><circle fill='white' r='90' transform='translate(180, 90)'></circle><circle fill='white' r='27' transform='translate(180, 270)'></circle><circle r='27' transform='translate(180, 90)'></circle><path stroke='black' stroke-width='2' fill='none' d='M276.714112750397,330.62330628061346A179,179,0,1,1,359,179.99999999999994'></path></svg></div>
-                    "))
+                    // The same file is the favicon, so the logo is kept in one place.
+                    div.logo { (PreEscaped(include_str!("../dist/favicon.svg"))) }
                     h1 { (t.site_title) }
                     figure.quote {
                         blockquote {
@@ -801,7 +804,9 @@ mod tests {
             !body.contains("role='banner'"),
             "<header> is already the banner landmark"
         );
-        assert!(body.contains("<svg viewBox='0 0 360 360' aria-hidden='true'"));
+        assert!(body.contains(
+            "<div class=\"logo\"><svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' aria-hidden='true'"
+        ));
         assert!(
             !body.contains("fonts.googleapis.com") && !body.contains("fonts.gstatic.com"),
             "fonts are self-hosted"
@@ -984,11 +989,22 @@ mod tests {
     #[tokio::test]
     async fn page_links_versioned_assets() -> TestResult {
         let (_, _, body) = get("/", None).await?;
-        for name in ["styles.css", "img/profile.jpg", "img/profile-432.jpg"] {
+        for name in [
+            "styles.css",
+            "img/profile.jpg",
+            "img/profile-432.jpg",
+            "favicon.svg",
+            "apple-touch-icon.png",
+        ] {
             let url = assets::url(name);
             assert!(url.contains("?v="), "{url}");
         }
-        for name in ["styles.css", "img/profile.jpg"] {
+        for name in [
+            "styles.css",
+            "img/profile.jpg",
+            "favicon.svg",
+            "apple-touch-icon.png",
+        ] {
             let url = assets::url(name);
             assert!(body.contains(&format!(r#"="{url}""#)), "{url} not linked");
         }
@@ -1003,7 +1019,13 @@ mod tests {
 
     #[tokio::test]
     async fn versioned_static_files_are_cached_immutably() -> TestResult {
-        for name in ["styles.css", "img/profile.jpg", "img/profile-432.jpg"] {
+        for name in [
+            "styles.css",
+            "img/profile.jpg",
+            "img/profile-432.jpg",
+            "favicon.svg",
+            "apple-touch-icon.png",
+        ] {
             let (status, headers, _) = get(&assets::url(name), None).await?;
             assert_eq!(status, StatusCode::OK, "{name}");
             assert_eq!(
