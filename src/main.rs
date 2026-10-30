@@ -49,8 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         app
     };
+    // Behind a reverse proxy, set HOST=127.0.0.1 to accept local connections only.
+    let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
-    let bind_addr = format!("0.0.0.0:{port}");
+    let bind_addr = if host.contains(':') {
+        format!("[{host}]:{port}") // IPv6
+    } else {
+        format!("{host}:{port}")
+    };
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .map_err(|error| {
