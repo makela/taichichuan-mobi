@@ -14,6 +14,10 @@ use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
 use tower_http::{
+    compression::{
+        CompressionLayer, DefaultPredicate,
+        predicate::{NotForContentType, Predicate},
+    },
     services::{ServeDir, ServeFile},
     trace,
     trace::TraceLayer,
@@ -58,11 +62,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let dev = env_flag("DEV");
     let app = app(Path::new(&static_dir), dev, &site_url);
-    let app = if dev {
-        app.layer(LiveReloadLayer::new())
-    } else {
-        app
-    };
     // Behind a reverse proxy, set HOST=127.0.0.1 to accept local connections only.
     let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
@@ -159,7 +158,7 @@ fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
         .layer(middleware::from_fn_with_state(dev, cache_static));
 
     let site_url: Arc<str> = site_url.trim_end_matches('/').into();
-    Router::new()
+    let app = Router::new()
         .route("/", get(index))
         .fallback(handler_404)
         .with_state(site_url)
@@ -168,7 +167,18 @@ fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
             TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        )
+        );
+    let app = if dev {
+        app.layer(LiveReloadLayer::new())
+    } else {
+        app
+    };
+    // Outermost, so that live reload can still inject into uncompressed HTML.
+    // Images are already skipped by the default predicate, and so are fonts here.
+    app.layer(
+        CompressionLayer::new()
+            .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/woff2"))),
+    )
 }
 
 /// Sets `Cache-Control` for static files. Versioned URLs (`?v=<hash>`, see
@@ -1089,6 +1099,72 @@ mod tests {
                 body.contains("<title>Sivua ei löydy ☯ Taiji-Timo</title>"),
                 "{uri}"
             );
+        }
+        Ok(())
+    }
+
+    /// The `Content-Encoding` and `Vary` of a response to `uri` for a browser accepting `encoding`.
+    async fn encoding_of(
+        app: Router,
+        uri: &str,
+        encoding: &'static str,
+    ) -> Result<(Option<String>, String), Box<dyn std::error::Error>> {
+        let request = Request::builder()
+            .uri(uri)
+            .header(header::ACCEPT_ENCODING, encoding)
+            .body(Body::empty())?;
+        let response = app.oneshot(request).await?;
+        let content_encoding = response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|value| value.to_str().map(str::to_string))
+            .transpose()?;
+        let vary = response
+            .headers()
+            .get_all(header::VARY)
+            .iter()
+            .map(|value| value.to_str().map(str::to_string))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        Ok((content_encoding, vary))
+    }
+
+    #[tokio::test]
+    async fn text_responses_are_compressed() -> TestResult {
+        for uri in ["/", "/?lang=fi", "/static/styles.css", "/does-not-exist"] {
+            let (encoding, vary) = encoding_of(
+                app(Path::new("dist"), false, TEST_SITE_URL),
+                uri,
+                "gzip, br",
+            )
+            .await?;
+            assert_eq!(encoding.as_deref(), Some("br"), "{uri}");
+            assert!(
+                vary.to_lowercase().contains("accept-encoding"),
+                "{uri}: {vary}"
+            );
+        }
+        let (encoding, vary) =
+            encoding_of(app(Path::new("dist"), false, TEST_SITE_URL), "/", "gzip").await?;
+        assert_eq!(encoding.as_deref(), Some("gzip"));
+        assert!(vary.contains("Accept-Language"), "{vary}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fonts_and_images_are_not_compressed_again() -> TestResult {
+        for uri in [
+            "/static/fonts/nunito-latin.woff2",
+            "/static/img/profile.jpg",
+            "/static/apple-touch-icon.png",
+        ] {
+            let (encoding, _) = encoding_of(
+                app(Path::new("dist"), false, TEST_SITE_URL),
+                uri,
+                "gzip, br",
+            )
+            .await?;
+            assert_eq!(encoding, None, "{uri}");
         }
         Ok(())
     }
