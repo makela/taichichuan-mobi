@@ -116,6 +116,16 @@ a:hover {
   border-radius: 50%;
 }
 
+/* On the narrowest phones the text beside the photo would be only a couple
+   of words wide, so the photo goes above the text instead. */
+@media (max-width: 24rem) {
+  .profile {
+    float: none;
+    display: block;
+    margin: 0.5rem auto 1rem;
+  }
+}
+
 .keep-together {
   white-space: nowrap;
 }
