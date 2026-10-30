@@ -103,6 +103,17 @@ a:hover {
   color: #bfdbfe;
 }
 
+/* Links in the text need more than colour to stand out from it: a thin,
+   faint underline that becomes solid on hover. */
+main a {
+  text-decoration: underline 1px rgb(147 197 253 / 0.25);
+  text-underline-offset: 0.2em;
+}
+
+main a:hover {
+  text-decoration-color: currentColor;
+}
+
 .logo, .profile {
   float: right;
 }
