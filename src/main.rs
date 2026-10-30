@@ -348,6 +348,13 @@ fn linked_markup<'a>(template: &'a str, links: &'a [(&'a str, &'a str, &'a str)]
     }
 }
 
+/// Latin subsets of the fonts used above the fold, see `@font-face` in styles.css.
+const PRELOADED_FONTS: &[&str] = &[
+    "/static/fonts/nunito-latin.woff2",
+    "/static/fonts/electrolize-latin.woff2",
+    "/static/fonts/gloria-hallelujah-latin.woff2",
+];
+
 fn layout(language: Language, t: &Translations, page_title: &str, content: &Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -357,6 +364,11 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 title { (page_title) " ☯ Taiji-Timo" }
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link href=(assets::url("styles.css")) rel="stylesheet";
+                // Fetch the first screen's fonts together with the stylesheet instead of
+                // after it. The URLs must match what styles.css resolves to.
+                @for font in PRELOADED_FONTS {
+                    link rel="preload" href=(font) as="font" type="font/woff2" crossorigin;
+                }
             }
             body {
                 nav aria-label=(t.language_label) {
@@ -767,6 +779,28 @@ mod tests {
 
         let (status, _, _) = get("/favicon.ico", None).await?;
         assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preloaded_fonts_match_stylesheet() -> TestResult {
+        let (_, _, body) = get("/", None).await?;
+        let (_, _, css) = get("/static/styles.css", None).await?;
+        for font in PRELOADED_FONTS {
+            assert!(
+                body.contains(&format!(
+                    r#"<link rel="preload" href="{font}" as="font" type="font/woff2" crossorigin>"#
+                )),
+                "{font} not preloaded"
+            );
+            let relative = font.strip_prefix("/static/").unwrap_or(font);
+            assert!(
+                css.contains(&format!("url({relative})")),
+                "{font} not in styles.css"
+            );
+            let (status, _, _) = get(font, None).await?;
+            assert_eq!(status, StatusCode::OK, "{font}");
+        }
         Ok(())
     }
 
