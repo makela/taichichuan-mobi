@@ -161,3 +161,10 @@ p {
     transform: rotate(1turn);
   }
 }
+
+/* Keep the logo still for visitors whose system asks for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .logo {
+    animation: none;
+  }
+}
