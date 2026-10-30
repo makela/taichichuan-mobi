@@ -15,6 +15,16 @@ fn content_hash(bytes: &[u8]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// The versioned files, which pages link to, that are not in `static_dir`.
+#[must_use]
+pub fn missing(static_dir: &Path) -> Vec<&'static str> {
+    VERSIONED_FILES
+        .iter()
+        .copied()
+        .filter(|name| !static_dir.join(name).is_file())
+        .collect()
+}
+
 /// Hashes the versioned files in `static_dir`. Only the first call has an effect.
 /// A missing file is skipped, and its URL is then left unversioned.
 pub fn init(static_dir: &Path) {
@@ -68,6 +78,12 @@ mod tests {
         assert!(is_current("styles.css", version));
         assert!(!is_current("styles.css", "0000000000000000"));
         assert!(!is_current("favicon.ico", version));
+    }
+
+    #[test]
+    fn missing_lists_files_not_in_static_dir() {
+        assert_eq!(missing(Path::new("dist")), Vec::<&str>::new());
+        assert_eq!(missing(Path::new("no-such-dir")), VERSIONED_FILES);
     }
 
     #[test]

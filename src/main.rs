@@ -44,7 +44,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let static_dir = std::env::var("STATIC_DIR").unwrap_or("dist".to_string());
     let site_url = std::env::var("SITE_URL").unwrap_or(DEFAULT_SITE_URL.to_string());
-    tracing::info!(%site_url, "Site settings");
+    tracing::info!(%static_dir, %site_url, "Site settings");
+    // A wrong STATIC_DIR would otherwise serve pages without styles or photos.
+    let missing = assets::missing(Path::new(&static_dir));
+    if !missing.is_empty() {
+        tracing::error!(%static_dir, ?missing, "Static files not found, check STATIC_DIR");
+        return Err(format!(
+            "static files not found in {static_dir}: {}",
+            missing.join(", ")
+        )
+        .into());
+    }
     let dev = env_flag("DEV");
     let app = app(Path::new(&static_dir), dev, &site_url);
     let app = if dev {
