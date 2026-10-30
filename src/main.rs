@@ -2,7 +2,7 @@ mod assets;
 
 use axum::{
     Router,
-    extract::{Query, Request, State},
+    extract::{Query, Request, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -143,22 +143,32 @@ enum Language {
     Fi,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct LanguageQuery {
     lang: Option<String>,
 }
 
-impl Language {
-    fn from_request(query: &LanguageQuery, headers: &HeaderMap) -> Self {
-        if let Some(language) = query.lang.as_deref() {
-            return if language.eq_ignore_ascii_case("fi") {
-                Self::Fi
-            } else {
-                Self::En
-            };
-        }
+impl LanguageQuery {
+    /// A query string that does not parse, e.g. one with `lang` repeated, counts
+    /// as having no `lang`, so the page falls back to the browser's language.
+    fn or_default(query: Result<Query<Self>, QueryRejection>) -> Self {
+        query.map(|Query(query)| query).unwrap_or_default()
+    }
+}
 
-        Self::from_accept_language(headers)
+impl Language {
+    /// A supported language by its code, e.g. "fi" or "FI".
+    fn from_code(code: &str) -> Option<Self> {
+        [Self::En, Self::Fi]
+            .into_iter()
+            .find(|language| code.eq_ignore_ascii_case(language.code()))
+    }
+
+    fn from_request(query: &LanguageQuery, headers: &HeaderMap) -> Self {
+        match query.lang.as_deref() {
+            Some(code) => Self::from_code(code).unwrap_or(Self::En),
+            None => Self::from_accept_language(headers),
+        }
     }
 
     fn from_accept_language(headers: &HeaderMap) -> Self {
@@ -174,14 +184,12 @@ impl Language {
             .enumerate()
             .filter_map(|(position, entry)| {
                 let mut parts = entry.trim().split(';');
-                let language = parts.next()?.trim();
-                let language_code = language.split('-').next()?;
-                if !language_code.eq_ignore_ascii_case("fi")
-                    && !language_code.eq_ignore_ascii_case("en")
-                    && language != "*"
-                {
-                    return None;
-                }
+                let range = parts.next()?.trim();
+                let language = if range == "*" {
+                    Self::En
+                } else {
+                    Self::from_code(range.split('-').next()?)?
+                };
                 let quality = parts
                     .find_map(|part| {
                         let (name, value) = part.trim().split_once('=')?;
@@ -192,7 +200,7 @@ impl Language {
                     })
                     .unwrap_or(1.0);
 
-                (quality > 0.0 && quality <= 1.0).then_some((language_code, quality, position))
+                (quality > 0.0 && quality <= 1.0).then_some((language, quality, position))
             })
             .max_by(
                 |(_, left_quality, left_position), (_, right_quality, right_position)| {
@@ -201,13 +209,7 @@ impl Language {
                         .then_with(|| right_position.cmp(left_position))
                 },
             )
-            .map_or(Self::En, |(language, _, _)| {
-                if language.eq_ignore_ascii_case("fi") {
-                    Self::Fi
-                } else {
-                    Self::En
-                }
-            })
+            .map_or(Self::En, |(language, _, _)| language)
     }
 
     fn code(self) -> &'static str {
@@ -387,8 +389,11 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
     }
 }
 
-async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl IntoResponse {
-    let language = Language::from_request(&query, &headers);
+async fn index(
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
     let t = Translations::for_language(language);
     let bio_links = [
         (
@@ -431,8 +436,11 @@ async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl I
     )
 }
 
-async fn handler_404(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl IntoResponse {
-    let language = Language::from_request(&query, &headers);
+async fn handler_404(
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
     let t = Translations::for_language(language);
     let front_page_href = format!("/?lang={}", language.code());
     let front_page_links = [("front_page", front_page_href.as_str(), t.front_page_link)];
@@ -550,6 +558,17 @@ mod tests {
         assert!(!flag_enabled(None));
         assert!(!flag_enabled(Some("0")));
         assert!(!flag_enabled(Some("false")));
+    }
+
+    #[test]
+    fn language_from_code_round_trips_and_ignores_case() {
+        for language in [Language::En, Language::Fi] {
+            assert!(Language::from_code(language.code()) == Some(language));
+        }
+        assert!(Language::from_code("FI") == Some(Language::Fi));
+        assert!(Language::from_code("sv").is_none());
+        assert!(Language::from_code("").is_none());
+        assert!(Language::from_code("*").is_none());
     }
 
     #[test]
@@ -701,6 +720,25 @@ mod tests {
                 "mailto:taichiwayfarer@gmail.com?subject=Kiinnostusta%20taijiopetuksesta"
             )
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unparsable_query_falls_back_to_accept_language() -> TestResult {
+        for (uri, status) in [
+            ("/?lang=en&lang=en", StatusCode::OK),
+            ("/does-not-exist?lang=en&lang=en", StatusCode::NOT_FOUND),
+        ] {
+            let (actual, headers, body) = get(uri, Some("fi")).await?;
+            assert_eq!(actual, status, "{uri}");
+            assert!(
+                headers[header::CONTENT_TYPE]
+                    .to_str()?
+                    .starts_with("text/html"),
+                "{uri}"
+            );
+            assert!(body.contains(r#"<html lang="fi">"#), "{uri}");
+        }
         Ok(())
     }
 
