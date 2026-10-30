@@ -419,7 +419,7 @@ async fn index(Query(query): Query<LanguageQuery>, headers: HeaderMap) -> impl I
             t.site_title,
             &html! {
                 h2 { (t.who) }
-                img .profile src=(assets::url("img/profile.jpg")) alt=(t.profile_alt);
+                img .profile src=(assets::url("img/profile.jpg")) width="184" height="184" alt=(t.profile_alt);
                 p { (linked_markup(t.bio, &bio_links)) }
                 p { (linked_markup(t.teachers, &teacher_links)) }
                 h2 { (t.what) }
@@ -643,6 +643,7 @@ mod tests {
         assert!(body.starts_with("<!DOCTYPE html>"));
         assert!(body.contains(r#"<head><meta charset="utf-8"><title>"#));
         assert!(!body.contains("X-UA-Compatible"));
+        assert!(body.contains(r#" width="184" height="184" alt="Profile picture">"#));
         assert!(
             body.contains("</blockquote><figcaption>- Master Tung Chen Wei</figcaption></figure>")
         );

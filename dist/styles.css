@@ -113,7 +113,8 @@ a:hover {
 .profile {
   margin: 0 2.5rem 0 0.75rem;
   width: 9rem;
-  clip-path: circle();
+  height: auto;
+  border-radius: 50%;
 }
 
 .keep-together {
