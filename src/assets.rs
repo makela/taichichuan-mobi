@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 /// Static files whose URLs carry a content hash, so browsers fetch them
 /// again whenever they change.
-const VERSIONED_FILES: &[&str] = &["styles.css", "img/profile.jpg"];
+const VERSIONED_FILES: &[&str] = &["styles.css", "img/profile.jpg", "img/profile-432.jpg"];
 
 static VERSIONS: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
 

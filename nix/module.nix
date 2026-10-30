@@ -8,6 +8,7 @@
 #     test = {
 #       package = pkgs.callPackage /srv/taichichuan-mobi-test/nix/package.nix { };
 #       port = 3101;
+#       siteUrl = "https://test.taichichuan.mobi";
 #     };
 #   };
 #
@@ -36,6 +37,12 @@ let
           default = pkgs.callPackage ./package.nix { };
           defaultText = lib.literalExpression "pkgs.callPackage ./package.nix { }";
           description = "The site package, including its static files.";
+        };
+
+        siteUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "https://www.taichichuan.mobi";
+          description = "Public address of the site, used in the page's search engine and link preview tags.";
         };
 
         host = lib.mkOption {
@@ -68,6 +75,7 @@ let
       environment = {
         HOST = instance.host;
         PORT = toString instance.port;
+        SITE_URL = instance.siteUrl;
         STATIC_DIR = "${instance.package}/share/taichichuan-mobi/dist";
         RUST_LOG = instance.logLevel;
       };

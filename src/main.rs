@@ -11,6 +11,7 @@ use axum::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
 use std::path::Path;
+use std::sync::Arc;
 use tower_http::{
     services::{ServeDir, ServeFile},
     trace,
@@ -42,8 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let static_dir = std::env::var("STATIC_DIR").unwrap_or("dist".to_string());
+    let site_url = std::env::var("SITE_URL").unwrap_or(DEFAULT_SITE_URL.to_string());
+    tracing::info!(%site_url, "Site settings");
     let dev = env_flag("DEV");
-    let app = app(Path::new(&static_dir), dev);
+    let app = app(Path::new(&static_dir), dev, &site_url);
     let app = if dev {
         app.layer(LiveReloadLayer::new())
     } else {
@@ -127,7 +130,10 @@ fn flag_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| !matches!(value, "0" | "false"))
 }
 
-fn app(static_dir: &Path, dev: bool) -> Router {
+/// Public address of the site, used for absolute links in the page head.
+const DEFAULT_SITE_URL: &str = "https://www.taichichuan.mobi";
+
+fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
         .nest_service("/static", ServeDir::new(static_dir))
@@ -137,10 +143,12 @@ fn app(static_dir: &Path, dev: bool) -> Router {
         )
         .layer(middleware::from_fn_with_state(dev, cache_static));
 
+    let site_url: Arc<str> = site_url.trim_end_matches('/').into();
     Router::new()
-        .merge(static_files)
         .route("/", get(index))
         .fallback(handler_404)
+        .with_state(site_url)
+        .merge(static_files)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
@@ -260,10 +268,19 @@ impl Language {
             Self::Fi => "fi",
         }
     }
+
+    /// Open Graph locale, e.g. for link previews.
+    fn locale(self) -> &'static str {
+        match self {
+            Self::En => "en_US",
+            Self::Fi => "fi_FI",
+        }
+    }
 }
 
 struct Translations {
     site_title: &'static str,
+    description: &'static str,
     quote_first_line: &'static str,
     quote_second_line: &'static str,
     quote_attribution: &'static str,
@@ -294,6 +311,7 @@ impl Translations {
         match language {
             Language::En => Self {
                 site_title: "Online Tai Chi Classes",
+                description: "Private online Tai Chi classes for beginners and fellow Tung-style practitioners. Book a free introductory session with Timo.",
                 quote_first_line: "Practice Tai Chi.",
                 quote_second_line: "It's good for you.",
                 quote_attribution: "Master Tung Chen Wei",
@@ -312,13 +330,14 @@ impl Translations {
                 booking: "Send me {email} to schedule a free introductory session!",
                 email_link: "an email",
                 email_subject: "Interest in Tai Chi Classes",
-                profile_alt: "Profile picture",
+                profile_alt: "Timo practicing Tai Chi in a garden",
                 not_found_title: "Not Found",
                 not_found: "The page you are looking for does not exist. Try {front_page} instead.",
                 front_page_link: "front page",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
+                description: "Yksityisiä taijin verkkotunteja aloittelijoille ja Tung-tyylin harjoittelijoille. Varaa maksuton tutustumistunti Timon kanssa.",
                 quote_first_line: "Harjoittele taijia.",
                 quote_second_line: "Se on hyväksi sinulle.",
                 quote_attribution: "Mestari Tung Chen Wei",
@@ -337,7 +356,7 @@ impl Translations {
                 booking: "Varaa maksuton tutustumisvideopuhelu lähettämällä minulle {email}!",
                 email_link: "sähköpostia",
                 email_subject: "Kiinnostusta taijiopetuksesta",
-                profile_alt: "Profiilikuva",
+                profile_alt: "Timo harjoittelee taijia puutarhassa",
                 not_found_title: "Sivua ei löydy",
                 not_found: "Etsimääsi sivua ei ole olemassa. Kokeile {front_page}.",
                 front_page_link: "etusivua",
@@ -397,7 +416,13 @@ const PRELOADED_FONTS: &[&str] = &[
     "/static/fonts/gloria-hallelujah-latin.woff2",
 ];
 
-fn layout(language: Language, t: &Translations, page_title: &str, content: &Markup) -> Markup {
+fn layout(
+    language: Language,
+    t: &Translations,
+    page_title: &str,
+    head: &Markup,
+    content: &Markup,
+) -> Markup {
     html! {
         (DOCTYPE)
         html lang=(language.code()) {
@@ -411,6 +436,7 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
                 @for font in PRELOADED_FONTS {
                     link rel="preload" href=(font) as="font" type="font/woff2" crossorigin;
                 }
+                (head)
             }
             body {
                 nav aria-label=(t.language_label) {
@@ -444,6 +470,7 @@ fn layout(language: Language, t: &Translations, page_title: &str, content: &Mark
 }
 
 async fn index(
+    State(site_url): State<Arc<str>>,
     query: Result<Query<LanguageQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -469,6 +496,7 @@ async fn index(
     let email_subject = urlencoding::encode(t.email_subject);
     let mailto = format!("mailto:taichiwayfarer@gmail.com?subject={email_subject}");
     let booking_links = [("email", mailto.as_str(), t.email_link)];
+    let page_url = |language: Language| format!("{site_url}/?lang={}", language.code());
 
     (
         [(header::VARY, "Accept-Language")],
@@ -476,9 +504,33 @@ async fn index(
             language,
             &t,
             t.site_title,
+            // For search engines and link previews. Each language has its own URL;
+            // plain / picks one from the browser's languages.
+            &html! {
+                meta name="description" content=(t.description);
+                link rel="canonical" href=(page_url(language));
+                @for alternate in [Language::En, Language::Fi] {
+                    link rel="alternate" hreflang=(alternate.code()) href=(page_url(alternate));
+                }
+                link rel="alternate" hreflang="x-default" href={ (site_url) "/" };
+                meta property="og:type" content="website";
+                meta property="og:site_name" content="Taiji-Timo";
+                meta property="og:title" content=(t.site_title);
+                meta property="og:description" content=(t.description);
+                meta property="og:url" content=(page_url(language));
+                meta property="og:locale" content=(language.locale());
+                meta property="og:image" content={ (site_url) (assets::url("img/profile.jpg")) };
+                meta property="og:image:width" content="288";
+                meta property="og:image:height" content="288";
+                meta property="og:image:alt" content=(t.profile_alt);
+            },
             &html! {
                 h2 { (t.who) }
-                img .profile src=(assets::url("img/profile.jpg")) width="184" height="184" alt=(t.profile_alt);
+                // Shown 9rem (144 CSS px) wide: 288 px for 1x and 2x screens, 432 px for 3x.
+                img .profile
+                    src=(assets::url("img/profile.jpg"))
+                    srcset={ (assets::url("img/profile.jpg")) " 2x, " (assets::url("img/profile-432.jpg")) " 3x" }
+                    width="288" height="288" alt=(t.profile_alt);
                 p { (linked_markup(t.bio, &bio_links)) }
                 p { (linked_markup(t.teachers, &teacher_links)) }
                 h2 { (t.what) }
@@ -506,6 +558,7 @@ async fn handler_404(
             language,
             &t,
             t.not_found_title,
+            &html! {},
             &html! {
                 h2 { (t.not_found_title) }
                 p { (linked_markup(t.not_found, &front_page_links)) }
@@ -521,6 +574,9 @@ mod tests {
     use tower::ServiceExt;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// With a trailing slash, which `app` removes.
+    const TEST_SITE_URL: &str = "https://example.test/";
 
     fn accept_language(value: &'static str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -684,7 +740,12 @@ mod tests {
         uri: &str,
         accept_language: Option<&'static str>,
     ) -> Result<(StatusCode, HeaderMap, String), Box<dyn std::error::Error>> {
-        get_from(app(Path::new("dist"), false), uri, accept_language).await
+        get_from(
+            app(Path::new("dist"), false, TEST_SITE_URL),
+            uri,
+            accept_language,
+        )
+        .await
     }
 
     async fn get_from(
@@ -716,7 +777,11 @@ mod tests {
         assert!(body.starts_with("<!DOCTYPE html>"));
         assert!(body.contains(r#"<head><meta charset="utf-8"><title>"#));
         assert!(!body.contains("X-UA-Compatible"));
-        assert!(body.contains(r#" width="184" height="184" alt="Profile picture">"#));
+        assert!(
+            body.contains(
+                r#" width="288" height="288" alt="Timo practicing Tai Chi in a garden">"#
+            )
+        );
         assert!(
             body.contains("</blockquote><figcaption>- Master Tung Chen Wei</figcaption></figure>")
         );
@@ -741,6 +806,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains(r#"<html lang="fi">"#), "{uri} {accept:?}");
             assert!(body.contains("Taijiopetusta"), "{uri} {accept:?}");
+            assert!(
+                body.contains(r#"alt="Timo harjoittelee taijia puutarhassa">"#),
+                "{uri} {accept:?}"
+            );
             assert!(
                 body.contains("<figcaption>- Mestari Tung Chen Wei</figcaption>"),
                 "{uri} {accept:?}"
@@ -792,6 +861,45 @@ mod tests {
                 "{uri}"
             );
             assert!(body.contains(r#"<html lang="fi">"#), "{uri}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn index_head_describes_page_for_search_and_sharing() -> TestResult {
+        for (lang, description) in [
+            ("en", "Private online Tai Chi classes"),
+            ("fi", "Yksityisiä taijin verkkotunteja"),
+        ] {
+            let (_, _, body) = get(&format!("/?lang={lang}"), None).await?;
+            let url = format!("https://example.test/?lang={lang}");
+            for tag in [
+                format!(r#"<meta name="description" content="{description}"#),
+                format!(r#"<link rel="canonical" href="{url}">"#),
+                format!(r#"<meta property="og:url" content="{url}">"#),
+                format!(r#"<meta property="og:description" content="{description}"#),
+                r#"<link rel="alternate" hreflang="en" href="https://example.test/?lang=en">"#
+                    .to_string(),
+                r#"<link rel="alternate" hreflang="fi" href="https://example.test/?lang=fi">"#
+                    .to_string(),
+                r#"<link rel="alternate" hreflang="x-default" href="https://example.test/">"#
+                    .to_string(),
+                format!(
+                    r#"<meta property="og:image" content="https://example.test{}">"#,
+                    assets::url("img/profile.jpg")
+                ),
+            ] {
+                assert!(body.contains(&tag), "{lang}: missing {tag}");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn not_found_page_has_no_search_or_sharing_tags() -> TestResult {
+        let (_, _, body) = get("/does-not-exist", None).await?;
+        for marker in ["canonical", "hreflang", "og:", r#"name="description""#] {
+            assert!(!body.contains(marker), "{marker}");
         }
         Ok(())
     }
@@ -866,17 +974,26 @@ mod tests {
     #[tokio::test]
     async fn page_links_versioned_assets() -> TestResult {
         let (_, _, body) = get("/", None).await?;
-        for name in ["styles.css", "img/profile.jpg"] {
+        for name in ["styles.css", "img/profile.jpg", "img/profile-432.jpg"] {
             let url = assets::url(name);
             assert!(url.contains("?v="), "{url}");
+        }
+        for name in ["styles.css", "img/profile.jpg"] {
+            let url = assets::url(name);
             assert!(body.contains(&format!(r#"="{url}""#)), "{url} not linked");
         }
+        let srcset = format!(
+            r#"srcset="{} 2x, {} 3x""#,
+            assets::url("img/profile.jpg"),
+            assets::url("img/profile-432.jpg")
+        );
+        assert!(body.contains(&srcset), "missing {srcset}");
         Ok(())
     }
 
     #[tokio::test]
     async fn versioned_static_files_are_cached_immutably() -> TestResult {
-        for name in ["styles.css", "img/profile.jpg"] {
+        for name in ["styles.css", "img/profile.jpg", "img/profile-432.jpg"] {
             let (status, headers, _) = get(&assets::url(name), None).await?;
             assert_eq!(status, StatusCode::OK, "{name}");
             assert_eq!(
@@ -919,7 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn dev_mode_disables_static_caching() -> TestResult {
         let (_, headers, _) = get_from(
-            app(Path::new("dist"), true),
+            app(Path::new("dist"), true, TEST_SITE_URL),
             &assets::url("styles.css"),
             None,
         )
