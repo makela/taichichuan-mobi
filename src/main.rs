@@ -319,6 +319,7 @@ struct Translations {
     not_found_title: &'static str,
     not_found: &'static str,
     front_page_link: &'static str,
+    business_id_label: &'static str,
 }
 
 impl Translations {
@@ -349,6 +350,7 @@ impl Translations {
                 not_found_title: "Not Found",
                 not_found: "The page you are looking for does not exist. Try {front_page} instead.",
                 front_page_link: "front page",
+                business_id_label: "Business ID",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
@@ -375,6 +377,7 @@ impl Translations {
                 not_found_title: "Sivua ei löydy",
                 not_found: "Etsimääsi sivua ei ole olemassa. Kokeile {front_page}.",
                 front_page_link: "etusivua",
+                business_id_label: "Y-tunnus",
             },
         }
     }
@@ -480,7 +483,7 @@ fn layout(
                     (content)
                 }
                 footer {
-                    p { "Taiji-Timo © 2212553-3" }
+                    p { "Taiji-Timo · " (t.business_id_label) " 2212553-3" }
                 }
             }
         }
@@ -805,6 +808,7 @@ mod tests {
         );
         assert!(body.contains(r#"<html lang="en">"#));
         assert!(body.contains("<title>Online Tai Chi Classes ☯ Taiji-Timo</title>"));
+        assert!(body.contains("<footer><p>Taiji-Timo · Business ID 2212553-3</p></footer>"));
         assert!(
             !body.contains("role='banner'"),
             "<header> is already the banner landmark"
@@ -826,6 +830,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains(r#"<html lang="fi">"#), "{uri} {accept:?}");
             assert!(body.contains("Taijiopetusta"), "{uri} {accept:?}");
+            assert!(
+                body.contains("<footer><p>Taiji-Timo · Y-tunnus 2212553-3</p></footer>"),
+                "{uri} {accept:?}"
+            );
             assert!(
                 body.contains(r#"alt="Timo harjoittelee taijia puutarhassa">"#),
                 "{uri} {accept:?}"

@@ -80,7 +80,11 @@ nav {
   padding-bottom: 1.5rem;
 }
 
+/* Quieter than the navigation, but still above the 4.5:1 contrast needed
+   for small text (55% gives about 4.6:1 on this background). */
 footer {
+  opacity: 0.55;
+  font-size: 0.8125rem;
   padding-top: 1.5rem;
   padding-bottom: 3rem;
   margin-top: auto;
