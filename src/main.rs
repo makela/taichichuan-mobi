@@ -3,6 +3,7 @@ mod assets;
 use axum::{
     Router,
     extract::{Query, Request, State, rejection::QueryRejection},
+    handler::HandlerWithoutStateExt,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -146,7 +147,11 @@ const DEFAULT_SITE_URL: &str = "https://www.taichichuan.mobi";
 fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
-        .nest_service("/static", ServeDir::new(static_dir))
+        .nest_service(
+            "/static",
+            // Missing files get the same not found page as missing pages.
+            ServeDir::new(static_dir).not_found_service(handler_404.into_service()),
+        )
         .route_service(
             "/favicon.ico",
             ServeFile::new(static_dir.join("favicon.ico")),
@@ -1050,6 +1055,30 @@ mod tests {
             assert_eq!(
                 headers[header::CACHE_CONTROL],
                 "public, max-age=86400",
+                "{uri}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_static_files_render_translated_404() -> TestResult {
+        for uri in [
+            "/static/missing.css",
+            "/static/",
+            "/static/img/",
+            "/static/../Cargo.toml",
+        ] {
+            let (status, headers, body) = get(uri, Some("fi")).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+            assert!(
+                headers[header::CONTENT_TYPE]
+                    .to_str()?
+                    .starts_with("text/html"),
+                "{uri}"
+            );
+            assert!(
+                body.contains("<title>Sivua ei löydy ☯ Taiji-Timo</title>"),
                 "{uri}"
             );
         }
