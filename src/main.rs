@@ -19,6 +19,7 @@ use tower_http::{
         predicate::{NotForContentType, Predicate},
     },
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace,
     trace::TraceLayer,
 };
@@ -143,6 +144,12 @@ fn flag_enabled(value: Option<&str>) -> bool {
 /// Public address of the site, used for absolute links in the page head.
 const DEFAULT_SITE_URL: &str = "https://www.taichichuan.mobi";
 
+/// Tells browsers to use only HTTPS for this host for a year. Without
+/// `includeSubDomains`, which from www would only cover *.www anyway: the bare
+/// domain's redirect needs its own header from the reverse proxy. Browsers
+/// ignore it over plain HTTP.
+const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000";
+
 fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
@@ -168,10 +175,14 @@ fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         );
+    // Not in dev mode, so that localhost is never pinned to HTTPS.
     let app = if dev {
         app.layer(LiveReloadLayer::new())
     } else {
-        app
+        app.layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(STRICT_TRANSPORT_SECURITY),
+        ))
     };
     // Outermost, so that live reload can still inject into uncompressed HTML.
     // Images are already skipped by the default predicate, and so are fonts here.
@@ -1187,6 +1198,25 @@ mod tests {
         )
         .await?;
         assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_require_https_except_in_dev_mode() -> TestResult {
+        for uri in ["/", "/static/styles.css", "/does-not-exist"] {
+            let (_, headers, _) = get(uri, None).await?;
+            assert_eq!(
+                headers[header::STRICT_TRANSPORT_SECURITY],
+                "max-age=31536000",
+                "{uri}"
+            );
+            let (_, headers, _) =
+                get_from(app(Path::new("dist"), true, TEST_SITE_URL), uri, None).await?;
+            assert!(
+                !headers.contains_key(header::STRICT_TRANSPORT_SECURITY),
+                "{uri}"
+            );
+        }
         Ok(())
     }
 }
