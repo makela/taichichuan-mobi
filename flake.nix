@@ -5,9 +5,10 @@
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url  = "github:numtide/flake-utils";
+    crane.url = "github:ipetkov/crane/v0.24.0";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, crane, ... }:
     {
       # Runs the site as a systemd service, see nix/module.nix
       nixosModules.default = import ./nix/module.nix;
@@ -21,7 +22,7 @@
       in
       with pkgs;
       {
-        packages.default = callPackage ./nix/package.nix { };
+        packages.default = callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
 
         devShells.default = mkShell {
           buildInputs = [
