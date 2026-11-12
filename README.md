@@ -17,7 +17,8 @@ nix flake check  # also runs the NixOS module in a virtual machine (nix/test.nix
 ```
 
 The dev shell also enables a pre-commit hook (`.githooks/pre-commit`) that runs
-`cargo fmt --check`, `cargo clippy` and `cargo test`. Skip it once with
+a check that staged images carry no GPS location, `cargo fmt --check`,
+`cargo clippy` and `cargo test`. Skip it once with
 `git commit --no-verify`.
 
 ## Configuration
@@ -63,3 +64,10 @@ magick screenshot.png -crop 654x654+599+477 +repage -filter Lanczos -resize 432x
 ```
 
 Update `width`/`height` in `src/main.rs` if the size changes.
+
+## License
+
+The code is under the MIT license, see `LICENSE`. The site's texts, in
+`Translations` in `src/main.rs`, and the photos in `dist/img/` are all rights
+reserved. The fonts in `dist/fonts/` are under the SIL Open Font License, with
+their license files next to them.

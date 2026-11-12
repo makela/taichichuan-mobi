@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
-# Runs formatting, lint and test checks before each commit.
+# Runs a photo location check and formatting, lint and test checks before each commit.
 # Enabled by the dev shell (core.hooksPath = .githooks). Skip once with `git commit --no-verify`.
 set -euo pipefail
 
 # Re-run inside the flake dev shell when the toolchain is not on PATH (e.g. GUI git clients).
 if ! command -v cargo-clippy >/dev/null 2>&1 && [ -z "${IN_NIX_SHELL:-}" ]; then
     exec nix develop --command "$0" "$@"
+fi
+
+echo "pre-commit: no GPS locations in staged images"
+gps=()
+while IFS= read -r -d '' f; do
+    # exiftool exits non-zero when the condition is false; that is the normal case.
+    found=$(git show ":$f" | exiftool -q -q -if '$GPSLatitude or $GPSLongitude or $GPSPosition' -p found - || true)
+    if [ -n "$found" ]; then
+        gps+=("$f")
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- \
+    '*.jpg' '*.jpeg' '*.JPG' '*.JPEG' '*.png' '*.PNG' '*.heic' '*.HEIC' '*.webp' '*.tif' '*.tiff')
+if [ ${#gps[@]} -gt 0 ]; then
+    echo "These images contain a GPS location:" >&2
+    printf '  %s\n' "${gps[@]}" >&2
+    echo "Remove it and stage them again: exiftool -gps:all= -overwrite_original <file>..." >&2
+    exit 1
 fi
 
 echo "pre-commit: cargo fmt --check"

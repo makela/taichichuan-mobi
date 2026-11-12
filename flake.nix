@@ -32,6 +32,7 @@
             rust-bin.stable.latest.default
             just
             watchexec
+            exiftool # for the pre-commit hook's photo location check
           ];
           shellHook = ''
             git config core.hooksPath .githooks
