@@ -150,6 +150,12 @@ const DEFAULT_SITE_URL: &str = "https://www.taichichuan.mobi";
 /// ignore it over plain HTTP.
 const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000";
 
+/// The page loads only its own styles, fonts and images, and runs no scripts.
+/// The logo is inline SVG markup, which needs no source of its own. Framing
+/// by other sites, forms and `<base>` are refused.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; font-src 'self'; \
+    img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
@@ -175,13 +181,23 @@ fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         );
-    // Not in dev mode, so that localhost is never pinned to HTTPS.
+    // Browsers trust the Content-Type of responses rather than guessing from content.
+    let app = app.layer(SetResponseHeaderLayer::overriding(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    ));
+    // Not in dev mode, so that localhost is never pinned to HTTPS, and live
+    // reload's inline script is not blocked.
     let app = if dev {
         app.layer(LiveReloadLayer::new())
     } else {
         app.layer(SetResponseHeaderLayer::overriding(
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static(STRICT_TRANSPORT_SECURITY),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         ))
     };
     // Outermost, so that live reload can still inject into uncompressed HTML.
@@ -1219,6 +1235,61 @@ mod tests {
                 !headers.contains_key(header::STRICT_TRANSPORT_SECURITY),
                 "{uri}"
             );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_restrict_content_except_in_dev_mode() -> TestResult {
+        for uri in ["/", "/static/styles.css", "/does-not-exist"] {
+            let (_, headers, _) = get(uri, None).await?;
+            assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
+            let policy = headers[header::CONTENT_SECURITY_POLICY].to_str()?;
+            assert!(
+                policy.starts_with("default-src 'none'; "),
+                "{uri}: {policy}"
+            );
+            assert!(policy.contains("frame-ancestors 'none'"), "{uri}: {policy}");
+            assert!(!policy.contains("  "), "{uri}: {policy}");
+
+            let (_, headers, _) =
+                get_from(app(Path::new("dist"), true, TEST_SITE_URL), uri, None).await?;
+            assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
+            assert!(
+                !headers.contains_key(header::CONTENT_SECURITY_POLICY),
+                "{uri}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pages_need_nothing_the_policy_blocks() -> TestResult {
+        for uri in ["/", "/does-not-exist"] {
+            let (_, _, body) = get(uri, None).await?;
+            for blocked in ["<script", "<style", " style=", "<iframe", "<form", "<base"] {
+                assert!(!body.contains(blocked), "{uri}: {blocked}");
+            }
+            // Images, the stylesheet, icons and fonts all come from the site
+            // itself; links and the search engine tags may point anywhere.
+            for tag in body.split('<').skip(1) {
+                let tag = tag.split_once('>').map_or(tag, |(tag, _)| tag);
+                if tag.starts_with("a ")
+                    || tag.contains(r#"rel="canonical""#)
+                    || tag.contains(r#"rel="alternate""#)
+                {
+                    continue;
+                }
+                for attribute in [r#" src=""#, r#" srcset=""#, r#" href=""#] {
+                    let Some((_, value)) = tag.split_once(attribute) else {
+                        continue;
+                    };
+                    let value = value.split_once('"').map_or(value, |(value, _)| value);
+                    for url in value.split(", ") {
+                        assert!(url.starts_with('/'), "{uri}: <{tag}>");
+                    }
+                }
+            }
         }
         Ok(())
     }
