@@ -2,7 +2,7 @@
 #   STATIC_DIR=$out/share/taichichuan-mobi/dist
 #
 # Crane builds the cargo dependencies in their own derivation, so changing the
-# blog's code, posts or assets only rebuilds the blog itself.
+# site's code or static files only rebuilds the site itself.
 {
   lib,
   pkgs,
