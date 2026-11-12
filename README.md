@@ -10,9 +10,10 @@ comes from `?lang=en` / `?lang=fi`, or else from the browser's languages.
 Enter the dev shell with direnv (`.envrc`) or `nix develop`, then:
 
 ```sh
-just watch     # run on http://localhost:3000, restart and reload on changes
-cargo test     # tests
-nix build      # the deployable package, into ./result
+just watch       # run on http://localhost:3000, restart and reload on changes
+cargo test       # tests
+nix build        # the deployable package, into ./result
+nix flake check  # also runs the NixOS module in a virtual machine (nix/test.nix)
 ```
 
 The dev shell also enables a pre-commit hook (`.githooks/pre-commit`) that runs

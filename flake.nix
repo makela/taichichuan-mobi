@@ -24,6 +24,9 @@
       {
         packages.default = callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
 
+        # Runs the NixOS module in a virtual machine, see nix/test.nix
+        checks.module = import ./nix/test.nix { inherit pkgs self; };
+
         devShells.default = mkShell {
           buildInputs = [
             rust-bin.stable.latest.default
