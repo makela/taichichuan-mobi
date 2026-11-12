@@ -561,9 +561,10 @@ async fn index(
                 meta property="og:description" content=(t.description);
                 meta property="og:url" content=(page_url(language));
                 meta property="og:locale" content=(language.locale());
-                meta property="og:image" content={ (site_url) (assets::url("img/profile.jpg")) };
-                meta property="og:image:width" content="288";
-                meta property="og:image:height" content="288";
+                // The largest crop in the repository; previews show larger images better.
+                meta property="og:image" content={ (site_url) (assets::url("img/profile-432.jpg")) };
+                meta property="og:image:width" content="432";
+                meta property="og:image:height" content="432";
                 meta property="og:image:alt" content=(t.profile_alt);
             },
             &html! {
@@ -935,8 +936,10 @@ mod tests {
                     .to_string(),
                 format!(
                     r#"<meta property="og:image" content="https://example.test{}">"#,
-                    assets::url("img/profile.jpg")
+                    assets::url("img/profile-432.jpg")
                 ),
+                r#"<meta property="og:image:width" content="432">"#.to_string(),
+                r#"<meta property="og:image:height" content="432">"#.to_string(),
             ] {
                 assert!(body.contains(&tag), "{lang}: missing {tag}");
             }
