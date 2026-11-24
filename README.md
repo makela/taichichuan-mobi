@@ -35,7 +35,10 @@ to, and logs which ones.
 `nix/module.nix` is a NixOS module that runs the site as a hardened systemd
 service, one per instance, listening on 127.0.0.1:3100 by default. Put a reverse
 proxy with TLS, such as nginx, in front. Usage is described at the top of the
-module.
+module. With `contentDir` set, an instance also has the lessons and members'
+pages, with its database in `/var/lib/taichichuan-mobi-<name>`, and the SMTP
+and Stripe secrets read from files outside the Nix store. The reverse proxy
+must pass `/stripe/webhook` through as is, for Stripe's signature to match.
 
 ## Content
 
@@ -105,9 +108,9 @@ Registering needs the terms accepted, and joining needs the member to ask for
 the membership to start at once, giving up the 14-day right of withdrawal.
 Request logs leave out query strings, which can hold login link tokens.
 
-For now all this runs in development mode only.
-Without `SMTP_HOST` the emails aren't sent and the link is logged instead, and
-the account page has a button to start or end a membership for trying out.
+Outside development mode the server needs `SMTP_HOST`. In development mode,
+without it the emails aren't sent and the link is logged instead, and the
+account page has a button to start or end a membership for trying out.
 Lessons passed by a quiz or a video review can be marked practised there too
 until those are made.
 

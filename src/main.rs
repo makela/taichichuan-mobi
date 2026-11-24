@@ -77,11 +77,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
     let members = match std::env::var("CONTENT_DIR") {
-        // Until members can pay, the lessons and accounts are for trying out.
-        Ok(content_dir) if !dev => {
-            tracing::warn!(%content_dir, "Lessons are only shown in dev mode for now, ignoring CONTENT_DIR");
-            None
-        }
         Ok(content_dir) => match Members::from_env(Path::new(&content_dir), &site_url, dev).await {
             Ok(members) => Some(Arc::new(members)),
             Err(error) => {

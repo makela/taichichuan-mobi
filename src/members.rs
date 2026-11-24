@@ -75,6 +75,10 @@ impl Members {
             .parse()
             .map_err(|error| format!("MAIL_FROM isn't an address: {error}"))?;
         let mailer = match setting("SMTP_HOST") {
+            // Logged login links would let anyone reading the logs log in.
+            None if !dev => {
+                return Err("SMTP_HOST is needed outside development mode".into());
+            }
             None => {
                 tracing::info!("SMTP_HOST isn't set: emails are only logged");
                 Mailer::Log
