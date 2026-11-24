@@ -28,6 +28,7 @@ let
       ../src
       ../dist
       ../migrations
+      ../legal
       ../tests
     ];
   };

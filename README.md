@@ -99,6 +99,12 @@ To try payments in development, with test mode keys and the dev shell's Stripe
 CLI: `stripe listen --forward-to localhost:3000/stripe/webhook` prints the
 webhook secret to use, and test cards such as 4242 4242 4242 4242 pay.
 
+The terms of use and the privacy notice are in `legal/`, as Markdown in both
+languages, at `/terms` and `/privacy`; every members' page links to them.
+Registering needs the terms accepted, and joining needs the member to ask for
+the membership to start at once, giving up the 14-day right of withdrawal.
+Request logs leave out query strings, which can hold login link tokens.
+
 For now all this runs in development mode only.
 Without `SMTP_HOST` the emails aren't sent and the link is logged instead, and
 the account page has a button to start or end a membership for trying out.
@@ -126,6 +132,6 @@ Update `width`/`height` in `src/main.rs` if the size changes.
 ## License
 
 The code is under the MIT license, see `LICENSE`. The site's texts, in
-`Translations` in `src/main.rs`, and the photos in `dist/img/` are all rights
-reserved. The fonts in `dist/fonts/` are under the SIL Open Font License, with
+`Translations` in `src/main.rs` and in `legal/`, and the photos in `dist/img/`
+are all rights reserved. The fonts in `dist/fonts/` are under the SIL Open Font License, with
 their license files next to them.

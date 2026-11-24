@@ -595,7 +595,7 @@ impl Access {
 /// Markdown to HTML. HTML written in the Markdown is shown as text, so the
 /// lesson texts can't add scripts, styles or anything else the pages'
 /// Content-Security-Policy would block.
-fn render_markdown(source: &str) -> String {
+pub fn render_markdown(source: &str) -> String {
     let parser = Parser::new_ext(
         source,
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,

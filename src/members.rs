@@ -22,7 +22,9 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
 use crate::accounts::{self, Accounts, LinkKind, SESSION_LIFETIME, User};
-use crate::lessons::{Access, Course, Kind, Learner, Lesson, LessonId, Passing, Set};
+use crate::lessons::{
+    Access, Course, Kind, Learner, Lesson, LessonId, Passing, Set, render_markdown,
+};
 use crate::mail::{self, Encryption, Mailer};
 use crate::stripe::{self, Stripe, Webhook};
 use crate::{Language, LanguageQuery, Translations, layout, linked_markup, not_found};
@@ -161,7 +163,9 @@ pub fn router(members: Arc<Members>) -> Router {
         .route("/membership/checkout", post(checkout))
         .route("/membership/welcome", get(welcome))
         .route("/membership/manage", post(manage_membership))
-        .route("/stripe/webhook", post(stripe_webhook));
+        .route("/stripe/webhook", post(stripe_webhook))
+        .route("/terms", get(terms_page))
+        .route("/privacy", get(privacy_page));
     let router = if members.dev {
         router.route("/account/dev-membership", post(dev_membership))
     } else {
@@ -310,6 +314,11 @@ fn page(visit: &Visit, path: &str, title: &str, content: &Markup) -> Markup {
                 }
             }
             (content)
+            p.legal-links {
+                a href=(href("/terms", language)) { (t.terms_title) }
+                " · "
+                a href=(href("/privacy", language)) { (t.privacy_title) }
+            }
         },
     )
 }
@@ -321,10 +330,24 @@ pub fn email_form(t: &Translations, language: Language, kind: LinkKind, email: &
         LinkKind::Login => "/login",
         LinkKind::Register => "/register",
     };
+    let terms = href("/terms", language);
+    let privacy = href("/privacy", language);
     html! {
         form.email-form method="post" action=(href(action, language)) {
             label for="email" { (t.email_label) }
             input #email type="email" name="email" value=(email) required autocomplete="email";
+            @if kind == LinkKind::Register {
+                label.checkbox {
+                    input type="checkbox" name="terms" value="yes" required;
+                    " "
+                    span {
+                        (linked_markup(t.accept_terms, &[
+                            ("terms", terms.as_str(), t.terms_link),
+                            ("privacy", privacy.as_str(), t.privacy_link),
+                        ]))
+                    }
+                }
+            }
             button type="submit" { (t.send_link) }
         }
     }
@@ -399,6 +422,8 @@ async fn show_email_page(
 #[derive(Deserialize)]
 struct EmailForm {
     email: String,
+    /// "yes" when the terms of use are accepted, on registering.
+    terms: Option<String>,
 }
 
 async fn login(
@@ -416,6 +441,16 @@ async fn register(
     headers: HeaderMap,
     Form(form): Form<EmailForm>,
 ) -> Page {
+    if form.terms.as_deref() != Some("yes") {
+        let visit = members.visit(query, &headers).await?;
+        let error = visit.t.accept_terms_needed;
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            page_headers(),
+            email_page(&visit, LinkKind::Register, &form.email, Some(error)),
+        )
+            .into_response());
+    }
     send_link(&members, query, &headers, LinkKind::Register, &form.email).await
 }
 
@@ -622,6 +657,10 @@ async fn account_page(
                     } @else if !member {
                         p { (t.membership_intro) }
                         form.email-form method="post" action=(href("/membership/checkout", language)) {
+                            label.checkbox {
+                                input type="checkbox" name="withdrawal" value="yes" required;
+                                " " span { (t.withdrawal_consent) }
+                            }
                             button type="submit" name="plan" value="monthly" {
                                 (t.join_monthly.replace("{price}", &stripe.monthly.text(language)))
                             }
@@ -778,6 +817,9 @@ impl Members {
 #[derive(Deserialize)]
 struct PlanForm {
     plan: String,
+    /// "yes" when the member asks the membership to start at once, giving up
+    /// the right of withdrawal.
+    withdrawal: Option<String>,
 }
 
 /// Starts buying a membership on Stripe's checkout page.
@@ -800,7 +842,7 @@ async fn checkout(
         "yearly" => &stripe.yearly,
         _ => return Ok(redirect("/account", language)),
     };
-    if user.is_member(Utc::now()) {
+    if user.is_member(Utc::now()) || form.withdrawal.as_deref() != Some("yes") {
         return Ok(redirect("/account", language));
     }
     match stripe
@@ -923,6 +965,67 @@ async fn stripe_webhook(
             Err(failure) => failure.into_response(),
         },
     }
+}
+
+#[derive(Clone, Copy)]
+enum Legal {
+    Terms,
+    Privacy,
+}
+
+/// The terms of use or the privacy notice, kept in `legal/` as Markdown.
+fn legal_text(legal: Legal, language: Language) -> &'static str {
+    match (legal, language) {
+        (Legal::Terms, Language::En) => include_str!("../legal/terms.en.md"),
+        (Legal::Terms, Language::Fi) => include_str!("../legal/terms.fi.md"),
+        (Legal::Privacy, Language::En) => include_str!("../legal/privacy.en.md"),
+        (Legal::Privacy, Language::Fi) => include_str!("../legal/privacy.fi.md"),
+    }
+}
+
+async fn terms_page(
+    State(members): State<Arc<Members>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    legal_page(&members, query, &headers, Legal::Terms).await
+}
+
+async fn privacy_page(
+    State(members): State<Arc<Members>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    legal_page(&members, query, &headers, Legal::Privacy).await
+}
+
+async fn legal_page(
+    members: &Members,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: &HeaderMap,
+    legal: Legal,
+) -> Page {
+    let visit = members.visit(query, headers).await?;
+    let t = &visit.t;
+    let (path, title) = match legal {
+        Legal::Terms => ("/terms", t.terms_title),
+        Legal::Privacy => ("/privacy", t.privacy_title),
+    };
+    let text = render_markdown(legal_text(legal, visit.language));
+    Ok((
+        // Public pages, unlike the other members' pages.
+        [(header::VARY, "Accept-Language")],
+        page(
+            &visit,
+            path,
+            title,
+            &html! {
+                h2 { (title) }
+                div.lesson-text { (PreEscaped(text)) }
+            },
+        ),
+    )
+        .into_response())
 }
 
 /// The address of a set's page, or of a lesson's page with `lesson`.
@@ -1471,7 +1574,11 @@ mod tests {
         async fn register(&self, email: &str) -> Result<String, Box<dyn std::error::Error>> {
             let before = self.sent_tokens().await.len();
             let reply = self
-                .post("/register?lang=en", None, &format!("email={email}"))
+                .post(
+                    "/register?lang=en",
+                    None,
+                    &format!("email={email}&terms=yes"),
+                )
                 .await?;
             assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
             let tokens = self.sent_tokens().await;
@@ -1505,7 +1612,11 @@ mod tests {
         );
 
         let reply = site
-            .post("/register?lang=fi", None, "email=ann%40example.fi")
+            .post(
+                "/register?lang=fi",
+                None,
+                "email=ann%40example.fi&terms=yes",
+            )
             .await?;
         assert!(
             reply
@@ -1599,7 +1710,9 @@ mod tests {
     #[tokio::test]
     async fn invalid_addresses_are_asked_again() -> TestResult {
         let site = site(false).await?;
-        let reply = site.post("/register?lang=en", None, "email=ann%40").await?;
+        let reply = site
+            .post("/register?lang=en", None, "email=ann%40&terms=yes")
+            .await?;
         assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(reply.body.contains("Please check the email address."));
         assert!(reply.body.contains(r#"value="ann@""#));
@@ -1613,7 +1726,11 @@ mod tests {
         // Twice: the failed link doesn't count as sent moments ago.
         for _ in 0..2 {
             let reply = site
-                .post("/register?lang=en", None, "email=ann%40example.fi")
+                .post(
+                    "/register?lang=en",
+                    None,
+                    "email=ann%40example.fi&terms=yes",
+                )
                 .await?;
             assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
             assert!(reply.body.contains("The email could not be sent."));
@@ -2183,7 +2300,7 @@ mod tests {
             .post(
                 "/membership/checkout?lang=en",
                 Some(&session),
-                "plan=monthly",
+                "plan=monthly&withdrawal=yes",
             )
             .await?;
         assert_eq!(reply.status, StatusCode::SEE_OTHER);
@@ -2288,7 +2405,7 @@ mod tests {
             .post(
                 "/membership/checkout?lang=en",
                 Some(&session),
-                "plan=yearly",
+                "plan=yearly&withdrawal=yes",
             )
             .await?;
         assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -2309,6 +2426,80 @@ mod tests {
         let ignored = r#"{"type":"invoice.paid","data":{"object":{"id":"in_1"}}}"#;
         let signature = stripe::sign("whsec_test", ignored.as_bytes(), Utc::now().timestamp());
         assert_eq!(webhook(&site, ignored, &signature).await?, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registering_needs_the_terms_accepted() -> TestResult {
+        let site = site(false).await?;
+        let reply = site.get("/register?lang=en", None).await?;
+        assert!(reply.body.contains(r#"<input type="checkbox" name="terms" value="yes" required> <span>I accept the <a href="/terms?lang=en">terms of use</a> and have read the <a href="/privacy?lang=en">privacy notice</a>.</span>"#));
+        let reply = site.get("/login?lang=en", None).await?;
+        assert!(!reply.body.contains(r#"name="terms""#));
+
+        let reply = site
+            .post("/register?lang=fi", None, "email=ann%40example.fi")
+            .await?;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(reply.body.contains("Hyväksy käyttöehdot."));
+        assert!(reply.body.contains(r#"value="ann@example.fi""#));
+        assert_eq!(site.sent_tokens().await, [] as [std::string::String; 0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terms_and_privacy_notice_are_public_in_both_languages() -> TestResult {
+        let site = site(false).await?;
+        for (uri, title, text) in [
+            ("/terms?lang=en", "Terms of use", "is not allowed."),
+            ("/terms?lang=fi", "Käyttöehdot", "on kielletty."),
+            (
+                "/privacy?lang=en",
+                "Privacy notice",
+                "Taiji-Timo, business ID 2212553-3",
+            ),
+            (
+                "/privacy?lang=fi",
+                "Tietosuojaseloste",
+                "Taiji-Timo, Y-tunnus 2212553-3",
+            ),
+        ] {
+            let reply = site.get(uri, None).await?;
+            assert_eq!(reply.status, StatusCode::OK, "{uri}");
+            assert!(reply.body.contains(&format!("<h2>{title}</h2>")), "{uri}");
+            assert!(reply.body.contains(text), "{uri}");
+            assert!(!reply.headers.contains_key(header::CACHE_CONTROL), "{uri}");
+        }
+        // Every members' page links to both.
+        let reply = site.get("/lessons?lang=fi", None).await?;
+        assert!(reply.body.contains(r#"<p class="legal-links"><a href="/terms?lang=fi">Käyttöehdot</a> · <a href="/privacy?lang=fi">Tietosuojaseloste</a></p>"#));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn joining_needs_the_right_of_withdrawal_given_up() -> TestResult {
+        let (site, fake) = site_with_stripe().await?;
+        let session = site.register("ann@example.fi").await?;
+        let reply = site.get("/account?lang=en", Some(&session)).await?;
+        assert!(
+            reply
+                .body
+                .contains(r#"<input type="checkbox" name="withdrawal" value="yes" required>"#)
+        );
+        let reply = site
+            .post(
+                "/membership/checkout?lang=en",
+                Some(&session),
+                "plan=monthly",
+            )
+            .await?;
+        assert_eq!(reply.location(), "/account?lang=en");
+        assert!(
+            !fake
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("POST /v1/checkout/sessions"))
+        );
         Ok(())
     }
 }

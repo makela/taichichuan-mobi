@@ -209,7 +209,11 @@ fn app(static_dir: &Path, dev: bool, site_url: &str, members: Option<Arc<Members
     };
     let app = app.layer(
         TraceLayer::new_for_http()
-            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+            // The path without the query, which can hold secrets, such as
+            // the token of a login link.
+            .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!("request", method = %request.method(), path = %request.uri().path())
+            })
             .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
     );
     // Browsers trust the Content-Type of responses rather than guessing from content.
@@ -455,6 +459,13 @@ struct Translations {
     payment_unavailable: &'static str,
     join_link: &'static str,
     to_lessons: &'static str,
+    terms_title: &'static str,
+    privacy_title: &'static str,
+    accept_terms: &'static str,
+    terms_link: &'static str,
+    privacy_link: &'static str,
+    accept_terms_needed: &'static str,
+    withdrawal_consent: &'static str,
     set_progress: &'static str,
     set_finished: &'static str,
     needs_set: &'static str,
@@ -554,6 +565,13 @@ impl Translations {
                 payment_unavailable: "The payment service can't be reached right now. Please try again in a while.",
                 join_link: "Become a member",
                 to_lessons: "On to the lessons",
+                terms_title: "Terms of use",
+                privacy_title: "Privacy notice",
+                accept_terms: "I accept the {terms} and have read the {privacy}.",
+                terms_link: "terms of use",
+                privacy_link: "privacy notice",
+                accept_terms_needed: "Please accept the terms of use.",
+                withdrawal_consent: "I want my membership to start right away, and I understand that I then lose my right of withdrawal.",
                 set_progress: "{passed} of {total} lessons passed",
                 set_finished: "Finished",
                 needs_set: "Opens when {set} is finished.",
@@ -648,6 +666,13 @@ impl Translations {
                 payment_unavailable: "Maksupalveluun ei juuri nyt saada yhteyttä. Yritä hetken päästä uudelleen.",
                 join_link: "Liity jäseneksi",
                 to_lessons: "Oppitunneille",
+                terms_title: "Käyttöehdot",
+                privacy_title: "Tietosuojaseloste",
+                accept_terms: "Hyväksyn {terms} ja olen lukenut {privacy}.",
+                terms_link: "käyttöehdot",
+                privacy_link: "tietosuojaselosteen",
+                accept_terms_needed: "Hyväksy käyttöehdot.",
+                withdrawal_consent: "Haluan jäsenyyteni alkavan heti ja ymmärrän, että menetän silloin peruuttamisoikeuteni.",
                 set_progress: "{passed}/{total} oppituntia läpäisty",
                 set_finished: "Suoritettu",
                 needs_set: "Avautuu, kun {set} on suoritettu.",

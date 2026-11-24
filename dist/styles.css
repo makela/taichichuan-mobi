@@ -303,3 +303,17 @@ p.lesson-meta {
   font-size: 0.8125rem;
   opacity: 0.7;
 }
+
+.legal-links {
+  margin-top: 2rem;
+  font-size: 0.8125rem;
+  opacity: 0.7;
+}
+
+.email-form .checkbox {
+  align-items: flex-start;
+}
+
+.email-form .checkbox input {
+  margin-top: 0.3rem;
+}
