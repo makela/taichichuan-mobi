@@ -1,6 +1,3 @@
-# Made-up lessons for the tests. The real lessons are kept outside this
-# repository, see src/lessons.rs for the format.
-
 [[lesson]]
 slug = "preparation"
 title = { en = "Preparation", fi = "Valmistautuminen" }

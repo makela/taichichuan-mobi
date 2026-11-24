@@ -1,0 +1,18 @@
+# A made-up course for the tests. The real course is kept outside this
+# repository, see src/lessons.rs for the format.
+
+[[set]]
+slug = "practices"
+title = { en = "Practices", fi = "Harjoitteet" }
+practices = true
+
+[[set]]
+slug = "slow-set"
+title = { en = "Slow Set", fi = "Hidas sarja" }
+movements = 89
+
+[[set]]
+slug = "fast-set"
+title = { en = "Fast Set", fi = "Nopea sarja" }
+movements = 50
+requires = ["slow-set"]

@@ -1,0 +1,13 @@
+[[lesson]]
+slug = "standing"
+title = { en = "Standing", fi = "Seisominen" }
+free = true
+
+[[lesson]]
+slug = "silk-reeling"
+title = { en = "Silk Reeling", fi = "Silkkikelaus" }
+
+[[lesson]]
+slug = "push-hands"
+title = { en = "Push Hands", fi = "Työntävät kädet" }
+opens_after = "slow-set/opening"

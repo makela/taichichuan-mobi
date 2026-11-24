@@ -49,15 +49,16 @@ module.
 
 ### Lessons
 
-The lessons of the form are members' material and are not in this repository.
-They are read at start-up from the directory in `CONTENT_DIR`: a
-`lessons.toml` listing the lessons in order, and each lesson's text in
-`<slug>/en.md` and `<slug>/fi.md` (Markdown; subheadings with `###`). The format
+The course is members' material and is not in this repository. It is read at
+start-up from the directory in `CONTENT_DIR`: `course.toml` lists its sets,
+which are forms (the slow set, the fast set, weapons) or practices beside them,
+and each set's `<set>/lessons.toml` lists its lessons, with each lesson's text in
+`<set>/<lesson>/en.md` and `fi.md` (Markdown; subheadings with `###`). The format
 is described at the top of `src/lessons.rs`, and `tests/lessons` has a made-up
-example. The server refuses to start if the lessons have mistakes, such as a
+example. The server refuses to start if the course has mistakes, such as a
 movement in two lessons, and says what is wrong.
 
-A lesson can have a video: `<slug>/video.mp4`, or `video-en.mp4` and
+A lesson can have a video: `<set>/<lesson>/video.mp4`, or `video-en.mp4` and
 `video-fi.mp4` for each language. The site serves it only to those who may open
 the lesson, and a note under it says that downloading or sharing the
 videos is against the terms of use. Before adding a video, remove its metadata,
@@ -73,10 +74,12 @@ ffmpeg -i original.mp4 -map_metadata -1 -c copy -movflags +faststart video.mp4
 With `CONTENT_DIR` set, visitors can register and log in at `/register` and
 `/login` with a link sent by email; there are no passwords. Accounts, sessions
 and the lessons each member has passed are in an SQLite database
-(`DATABASE_URL`, tables in `migrations/`). The free lessons are open to everyone
-logged in; members take the rest in order, each opening when the one before it
-is passed, and passed lessons stay open. `/account` has logging out and
-deleting the account.
+(`DATABASE_URL`, tables in `migrations/`). Free lessons and practices are open
+to everyone logged in. Members take the lessons of each form in order, each
+opening when the one before it is passed, and passed lessons stay open. A form
+that requires another opens when that one is finished. Practices are open to
+members at once, or once a given lesson is passed. `/account` has logging out
+and deleting the account.
 
 For now all this runs in development mode only, as there are no payments yet.
 Without `SMTP_HOST` the emails aren't sent and the link is logged instead, and

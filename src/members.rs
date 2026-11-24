@@ -15,13 +15,14 @@ use chrono::{Duration, Utc};
 use lettre::message::Mailbox;
 use maud::{Markup, PreEscaped, html};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
 use crate::accounts::{self, Accounts, LinkKind, SESSION_LIFETIME, User};
-use crate::lessons::{Access, Learner, Lesson, Lessons, Passing};
+use crate::lessons::{Access, Course, Kind, Learner, Lesson, LessonId, Passing, Set};
 use crate::mail::{self, Encryption, Mailer};
 use crate::{Language, LanguageQuery, Translations, layout, linked_markup, not_found};
 
@@ -32,7 +33,7 @@ const SESSION_COOKIE: &str = "session";
 const DEV_PASSING_NOTE: &str = "Development only: quizzes and video reviews aren't made yet, so this lesson can be marked practised.";
 
 pub struct Members {
-    lessons: Lessons,
+    course: Course,
     accounts: Accounts,
     mailer: Mailer,
     from: Mailbox,
@@ -48,8 +49,13 @@ impl Members {
     /// and the emails sent as set by `MAIL_FROM` and the `SMTP_` variables;
     /// without `SMTP_HOST` the emails are only logged.
     pub async fn from_env(content_dir: &Path, site_url: &str, dev: bool) -> Result<Self, String> {
-        let lessons = Lessons::load(content_dir)?;
-        tracing::info!(content_dir = %content_dir.display(), count = lessons.all().len(), "Loaded lessons");
+        let course = Course::load(content_dir)?;
+        tracing::info!(
+            content_dir = %content_dir.display(),
+            sets = course.sets().len(),
+            lessons = course.sets().iter().map(|set| set.lessons.len()).sum::<usize>(),
+            "Loaded the course"
+        );
         let setting = |name: &str| {
             std::env::var(name)
                 .ok()
@@ -92,7 +98,7 @@ impl Members {
             }
         };
         Ok(Self {
-            lessons,
+            course,
             accounts: Accounts::new(pool),
             mailer,
             from,
@@ -110,10 +116,11 @@ pub fn router(members: Arc<Members>) -> Router {
         .route("/logout", post(logout))
         .route("/account", get(account_page))
         .route("/account/delete", post(delete_account))
-        .route("/lessons", get(lesson_list))
-        .route("/lessons/{slug}", get(lesson_page))
-        .route("/lessons/{slug}/complete", post(complete_lesson))
-        .route("/lessons/{slug}/video", get(lesson_video));
+        .route("/lessons", get(course_page))
+        .route("/lessons/{set}", get(set_page))
+        .route("/lessons/{set}/{lesson}", get(lesson_page))
+        .route("/lessons/{set}/{lesson}/complete", post(complete_lesson))
+        .route("/lessons/{set}/{lesson}/video", get(lesson_video));
     let router = if members.dev {
         router.route("/account/dev-membership", post(dev_membership))
     } else {
@@ -655,8 +662,12 @@ async fn dev_membership(
     Ok(redirect("/account", visit.language))
 }
 
-fn lesson_href(lesson: &Lesson, language: Language) -> String {
-    href(&format!("/lessons/{}", lesson.slug), language)
+/// The address of a set's page, or of a lesson's page with `lesson`.
+fn set_href(set: &Set, lesson: Option<&Lesson>, language: Language) -> String {
+    match lesson {
+        Some(lesson) => href(&format!("/lessons/{}/{}", set.slug, lesson.slug), language),
+        None => href(&format!("/lessons/{}", set.slug), language),
+    }
 }
 
 /// E.g. "Movement 1" or "Movements 5, 30".
@@ -678,39 +689,121 @@ fn passing_text(t: &Translations, passing: Passing) -> &'static str {
     }
 }
 
-impl Members {
-    /// Whether `visit`'s user may open each lesson, in order.
-    async fn access(&self, visit: &Visit) -> Result<Vec<Access>, Failure> {
-        let positions = 0..self.lessons.all().len();
-        let Some(user) = &visit.user else {
-            return Ok(positions.map(|_| Access::NeedsLogin).collect());
-        };
-        let completed = self.accounts.completed(user.id).await?;
-        let learner = Learner {
-            member: user.is_member(Utc::now()),
-            completed: &completed,
-        };
-        Ok(positions
-            .map(|position| self.lessons.access(position, Some(&learner)))
-            .collect())
-    }
+/// A logged in user's membership and passed lessons.
+struct Progress {
+    member: bool,
+    completed: HashSet<String>,
+}
 
-    /// Whether a lesson can be passed by marking it practised.
-    fn can_mark_done(&self, lesson: &Lesson) -> bool {
-        lesson.passing == Passing::Practice || self.dev
+impl Progress {
+    fn learner(&self) -> Learner<'_> {
+        Learner {
+            member: self.member,
+            completed: &self.completed,
+        }
     }
 }
 
-async fn lesson_list(
+impl Members {
+    /// The progress of `visit`'s user, if logged in.
+    async fn progress(&self, visit: &Visit) -> Result<Option<Progress>, Failure> {
+        let Some(user) = &visit.user else {
+            return Ok(None);
+        };
+        Ok(Some(Progress {
+            member: user.is_member(Utc::now()),
+            completed: self.accounts.completed(user.id).await?,
+        }))
+    }
+
+    fn access(&self, id: LessonId, progress: Option<&Progress>) -> Access {
+        self.course
+            .access(id, progress.map(Progress::learner).as_ref())
+    }
+
+    /// Whether a lesson of a form can be passed by marking it practised.
+    fn can_mark_done(&self, lesson: &Lesson) -> bool {
+        match lesson.passing {
+            Some(Passing::Practice) => true,
+            Some(_) => self.dev,
+            None => false,
+        }
+    }
+
+    /// Why a locked lesson or set isn't open yet, with links to what opens it.
+    fn lock_text(&self, t: &Translations, language: Language, access: Access) -> Markup {
+        match access {
+            Access::NeedsMembership => html! { (t.needs_membership) },
+            Access::NeedsSet(set) => {
+                let Some(set) = self.course.sets().get(set) else {
+                    return html! {};
+                };
+                let link = set_href(set, None, language);
+                linked_markup(t.needs_set, &[("set", link.as_str(), set.title(language))])
+            }
+            Access::NeedsLesson(id) => {
+                let (Some(set), Some(lesson)) =
+                    (self.course.sets().get(id.set), self.course.lesson(id))
+                else {
+                    return html! {};
+                };
+                let link = set_href(set, Some(lesson), language);
+                linked_markup(
+                    t.needs_lesson,
+                    &[("lesson", link.as_str(), lesson.title(language))],
+                )
+            }
+            Access::NeedsPrevious => html! { (t.needs_previous) },
+            Access::Open | Access::Done | Access::NeedsLogin => html! {},
+        }
+    }
+}
+
+fn needs_login(t: &Translations, language: Language) -> Markup {
+    let login = href("/login", language);
+    let register = href("/register", language);
+    html! {
+        p {
+            (linked_markup(t.needs_login, &[
+                ("login", login.as_str(), t.login_inline),
+                ("register", register.as_str(), t.register_inline),
+            ]))
+        }
+    }
+}
+
+/// The sets with how far the visitor has got in each.
+async fn course_page(
     State(members): State<Arc<Members>>,
     query: Result<Query<LanguageQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Page {
     let visit = members.visit(query, &headers).await?;
-    let access = members.access(&visit).await?;
+    let progress = members.progress(&visit).await?;
     let (language, t) = (visit.language, &visit.t);
-    let login = href("/login", language);
-    let register = href("/register", language);
+    let status = |position: usize, set: &Set| -> Markup {
+        let total = set.lessons.len();
+        let count = match set.kind {
+            Kind::Form => t.lesson_count,
+            Kind::Practices => t.practice_count,
+        };
+        let Some(progress) = &progress else {
+            return html! { (count.replace("{count}", &total.to_string())) };
+        };
+        if let Some(required) = members.course.missing_set(position, &progress.completed) {
+            return members.lock_text(t, language, Access::NeedsSet(required));
+        }
+        let passed = members.course.passed(position, &progress.completed);
+        match set.kind {
+            Kind::Practices => html! { (count.replace("{count}", &total.to_string())) },
+            Kind::Form if passed == total => html! { (t.set_finished) },
+            Kind::Form => html! {
+                (t.set_progress
+                    .replace("{passed}", &passed.to_string())
+                    .replace("{total}", &total.to_string()))
+            },
+        }
+    };
     Ok((
         page_headers(),
         page(
@@ -720,30 +813,13 @@ async fn lesson_list(
             &html! {
                 h2 { (t.lessons_title) }
                 @if visit.user.is_none() {
-                    p {
-                        (linked_markup(t.needs_login, &[
-                            ("login", login.as_str(), t.login_inline),
-                            ("register", register.as_str(), t.register_inline),
-                        ]))
-                    }
+                    (needs_login(t, language))
                 }
-                ol.lessons {
-                    @for (lesson, access) in members.lessons.all().iter().zip(access) {
+                ul.lessons {
+                    @for (position, set) in members.course.sets().iter().enumerate() {
                         li {
-                            @if access.is_open() {
-                                a href=(lesson_href(lesson, language)) { (lesson.title(language)) }
-                            } @else {
-                                (lesson.title(language))
-                            }
-                            span.lesson-meta {
-                                " · " (movements_text(t, &lesson.movements))
-                                @if lesson.free { " · " (t.free) }
-                                @match access {
-                                    Access::Done => { " · " (t.done) }
-                                    Access::NeedsMembership | Access::NeedsPrevious => { " · " (t.locked) }
-                                    Access::Open | Access::NeedsLogin => {}
-                                }
-                            }
+                            a href=(set_href(set, None, language)) { (set.title(language)) }
+                            span.lesson-meta { " · " (status(position, set)) }
                         }
                     }
                 }
@@ -753,75 +829,155 @@ async fn lesson_list(
         .into_response())
 }
 
-async fn lesson_page(
+/// A set's lessons, and which of them the visitor may open.
+async fn set_page(
     State(members): State<Arc<Members>>,
-    UrlPath(slug): UrlPath<String>,
+    UrlPath(set_slug): UrlPath<String>,
     query: Result<Query<LanguageQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Page {
     let visit = members.visit(query, &headers).await?;
     let language = visit.language;
-    let Some((position, lesson)) = members.lessons.find(&slug) else {
+    let Some((position, set)) = members.course.find_set(&set_slug) else {
         return Ok(not_found(language));
     };
-    let access = members
-        .access(&visit)
-        .await?
-        .get(position)
-        .copied()
-        .unwrap_or(Access::NeedsLogin);
+    let progress = members.progress(&visit).await?;
+    let t = &visit.t;
+    let missing = progress
+        .as_ref()
+        .and_then(|progress| members.course.missing_set(position, &progress.completed));
+    let item = |lesson_position: usize, lesson: &Lesson| {
+        let id = LessonId {
+            set: position,
+            lesson: lesson_position,
+        };
+        let access = members.access(id, progress.as_ref());
+        html! {
+            li {
+                @if access.is_open() {
+                    a href=(set_href(set, Some(lesson), language)) { (lesson.title(language)) }
+                } @else {
+                    (lesson.title(language))
+                }
+                span.lesson-meta {
+                    @if set.kind == Kind::Form {
+                        " · " (movements_text(t, &lesson.movements))
+                    }
+                    @if lesson.free { " · " (t.free) }
+                    @match access {
+                        Access::Done => { " · " (t.done) }
+                        Access::Open | Access::NeedsLogin => {}
+                        _ => { " · " (t.locked) }
+                    }
+                }
+            }
+        }
+    };
+    Ok((
+        page_headers(),
+        page(
+            &visit,
+            &format!("/lessons/{}", set.slug),
+            set.title(language),
+            &html! {
+                h2 { (set.title(language)) }
+                @if visit.user.is_none() {
+                    (needs_login(t, language))
+                }
+                @if let Some(required) = missing {
+                    p { (members.lock_text(t, language, Access::NeedsSet(required))) }
+                }
+                @if set.kind == Kind::Form {
+                    ol.lessons {
+                        @for (lesson_position, lesson) in set.lessons.iter().enumerate() {
+                            (item(lesson_position, lesson))
+                        }
+                    }
+                } @else {
+                    ul.lessons {
+                        @for (lesson_position, lesson) in set.lessons.iter().enumerate() {
+                            (item(lesson_position, lesson))
+                        }
+                    }
+                }
+                p.lesson-nav {
+                    a href=(href("/lessons", language)) { (t.all_lessons) }
+                }
+            },
+        ),
+    )
+        .into_response())
+}
+
+async fn lesson_page(
+    State(members): State<Arc<Members>>,
+    UrlPath((set_slug, lesson_slug)): UrlPath<(String, String)>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    let visit = members.visit(query, &headers).await?;
+    let language = visit.language;
+    let Some((id, lesson)) = members.course.find(&set_slug, &lesson_slug) else {
+        return Ok(not_found(language));
+    };
+    let set = &members.course.sets()[id.set];
+    let progress = members.progress(&visit).await?;
+    let access = members.access(id, progress.as_ref());
     if access == Access::NeedsLogin {
         return Ok(redirect("/login", language));
     }
     let t = &visit.t;
-    let lessons = members.lessons.all();
-    let previous = position
+    let previous = id
+        .lesson
         .checked_sub(1)
-        .and_then(|previous| lessons.get(previous));
-    let next = lessons.get(position + 1);
+        .and_then(|previous| set.lessons.get(previous));
+    let next = set.lessons.get(id.lesson + 1);
     let number = t
         .lesson_number
-        .replace("{number}", &(position + 1).to_string());
+        .replace("{number}", &(id.lesson + 1).to_string());
     let content = html! {
         p.lesson-meta {
-            (number) " · " (movements_text(t, &lesson.movements))
+            a href=(set_href(set, None, language)) { (set.title(language)) }
+            @if set.kind == Kind::Form {
+                " · " (number) " · " (movements_text(t, &lesson.movements))
+            }
             @if lesson.free { " · " (t.free) }
         }
         h2 { (lesson.title(language)) }
-        @match access {
-            Access::Open | Access::Done => {
-                @if lesson.video(language).is_some() {
-                    video.lesson-video controls preload="metadata" controlslist="nodownload"
-                        src=(href(&format!("/lessons/{}/video", lesson.slug), language)) {
-                        (t.video_unsupported)
-                    }
-                    p.video-notice { (t.video_notice) }
+        @if access.is_open() {
+            @if lesson.video(language).is_some() {
+                video.lesson-video controls preload="metadata" controlslist="nodownload"
+                    src=(href(&format!("/lessons/{}/{}/video", set.slug, lesson.slug), language)) {
+                    (t.video_unsupported)
                 }
-                div.lesson-text { (PreEscaped(lesson.html(language))) }
-                p.passing { (t.passing_label) ": " (passing_text(t, lesson.passing)) }
+                p.video-notice { (t.video_notice) }
+            }
+            div.lesson-text { (PreEscaped(lesson.html(language))) }
+            @if let Some(passing) = lesson.passing {
+                p.passing { (t.passing_label) ": " (passing_text(t, passing)) }
                 @if access == Access::Done {
                     p { (t.lesson_done) }
                 } @else if members.can_mark_done(lesson) {
-                    @if lesson.passing != Passing::Practice {
+                    @if passing != Passing::Practice {
                         p.dev-note { (DEV_PASSING_NOTE) }
                     }
-                    form.email-form method="post" action=(href(&format!("/lessons/{}/complete", lesson.slug), language)) {
+                    form.email-form method="post" action=(href(&format!("/lessons/{}/{}/complete", set.slug, lesson.slug), language)) {
                         button type="submit" { (t.mark_done) }
                     }
                 }
             }
-            Access::NeedsMembership => { p { (t.needs_membership) } }
-            Access::NeedsPrevious | Access::NeedsLogin => { p { (t.needs_previous) } }
+        } @else {
+            p { (members.lock_text(t, language, access)) }
         }
         p.lesson-nav {
             @if let Some(previous) = previous {
-                a href=(lesson_href(previous, language)) rel="prev" { "← " (t.previous_lesson) }
+                a href=(set_href(set, Some(previous), language)) rel="prev" { "← " (t.previous_lesson) }
                 " · "
             }
-            a href=(href("/lessons", language)) { (t.all_lessons) }
+            a href=(set_href(set, None, language)) { (set.title(language)) }
             @if let Some(next) = next {
                 " · "
-                a href=(lesson_href(next, language)) rel="next" { (t.next_lesson) " →" }
+                a href=(set_href(set, Some(next), language)) rel="next" { (t.next_lesson) " →" }
             }
         }
     };
@@ -835,7 +991,7 @@ async fn lesson_page(
         page_headers(),
         page(
             &visit,
-            &format!("/lessons/{}", lesson.slug),
+            &format!("/lessons/{}/{}", set.slug, lesson.slug),
             lesson.title(language),
             &content,
         ),
@@ -847,20 +1003,20 @@ async fn lesson_page(
 /// for it in parts (Range requests) as it plays and seeks.
 async fn lesson_video(
     State(members): State<Arc<Members>>,
-    UrlPath(slug): UrlPath<String>,
+    UrlPath((set_slug, lesson_slug)): UrlPath<(String, String)>,
     query: Result<Query<LanguageQuery>, QueryRejection>,
     request: Request,
 ) -> Page {
     let visit = members.visit(query, request.headers()).await?;
     let language = visit.language;
-    let Some((position, lesson)) = members.lessons.find(&slug) else {
+    let Some((id, lesson)) = members.course.find(&set_slug, &lesson_slug) else {
         return Ok(not_found(language));
     };
-    let access = members.access(&visit).await?.get(position).copied();
-    match access {
-        Some(access) if access.is_open() => {}
-        Some(Access::NeedsLogin) | None => return Ok(redirect("/login", language)),
-        Some(_) => return Ok(StatusCode::FORBIDDEN.into_response()),
+    let progress = members.progress(&visit).await?;
+    match members.access(id, progress.as_ref()) {
+        access if access.is_open() => {}
+        Access::NeedsLogin => return Ok(redirect("/login", language)),
+        _ => return Ok(StatusCode::FORBIDDEN.into_response()),
     }
     let Some(path) = lesson.video(language) else {
         return Ok(not_found(language));
@@ -879,29 +1035,32 @@ async fn lesson_video(
 
 async fn complete_lesson(
     State(members): State<Arc<Members>>,
-    UrlPath(slug): UrlPath<String>,
+    UrlPath((set_slug, lesson_slug)): UrlPath<(String, String)>,
     query: Result<Query<LanguageQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Page {
     let visit = members.visit(query, &headers).await?;
     let language = visit.language;
-    let Some((position, lesson)) = members.lessons.find(&slug) else {
+    let Some((id, lesson)) = members.course.find(&set_slug, &lesson_slug) else {
         return Ok(not_found(language));
     };
     let Some(user) = &visit.user else {
         return Ok(redirect("/login", language));
     };
-    let access = members.access(&visit).await?.get(position).copied();
-    if access != Some(Access::Open) || !members.can_mark_done(lesson) {
+    let set = &members.course.sets()[id.set];
+    let progress = members.progress(&visit).await?;
+    if members.access(id, progress.as_ref()) != Access::Open || !members.can_mark_done(lesson) {
         // Passed already, locked, or passed some other way: back to the lesson.
-        return Ok(redirect(&format!("/lessons/{}", lesson.slug), language));
+        return Ok(Redirect::to(&set_href(set, Some(lesson), language)).into_response());
     }
     members
         .accounts
-        .complete(user.id, &lesson.slug, Utc::now())
+        .complete(user.id, &lesson.key, Utc::now())
         .await?;
-    Ok(match members.lessons.all().get(position + 1) {
-        Some(next) => redirect(&format!("/lessons/{}", next.slug), language),
+    // On to the next lesson, or after the last one, to the sets, where the
+    // next set may have opened.
+    Ok(match set.lessons.get(id.lesson + 1) {
+        Some(next) => Redirect::to(&set_href(set, Some(next), language)).into_response(),
         None => redirect("/lessons", language),
     })
 }
@@ -927,7 +1086,7 @@ mod tests {
         outbox: &AsyncStubTransport,
     ) -> Result<Arc<Members>, Box<dyn std::error::Error>> {
         Ok(Arc::new(Members {
-            lessons: Lessons::load(Path::new("tests/lessons"))?,
+            course: Course::load(Path::new("tests/lessons"))?,
             accounts: Accounts::new(crate::db::in_memory().await?),
             mailer: Mailer::Stub(outbox.clone()),
             from: mail::DEFAULT_FROM.parse()?,
@@ -1197,20 +1356,27 @@ mod tests {
     async fn visitors_see_the_lessons_but_must_log_in_to_open_them() -> TestResult {
         let site = site(false).await?;
         let reply = site.get("/lessons?lang=en", None).await?;
+        assert!(reply.body.contains(r#"<li><a href="/lessons/slow-set?lang=en">Slow Set</a><span class="lesson-meta"> · 3 lessons</span></li>"#));
         assert_eq!(reply.status, StatusCode::OK);
         assert!(reply.body.contains(r#"<a href="/login?lang=en">Log in</a> or <a href="/register?lang=en">register</a> to start the lessons."#));
+        let reply = site.get("/lessons/slow-set?lang=en", None).await?;
+        assert_eq!(reply.status, StatusCode::OK);
         assert!(reply.body.contains(
             "<li>Preparation<span class=\"lesson-meta\"> · Movement 1 · Free</span></li>"
         ));
-        assert!(!reply.body.contains(r#"href="/lessons/preparation"#));
+        assert!(
+            !reply
+                .body
+                .contains(r#"href="/lessons/slow-set/preparation"#)
+        );
 
-        for uri in ["/lessons/preparation?lang=en", "/account?lang=en"] {
+        for uri in ["/lessons/slow-set/preparation?lang=en", "/account?lang=en"] {
             let reply = site.get(uri, None).await?;
             assert_eq!(reply.status, StatusCode::SEE_OTHER, "{uri}");
             assert_eq!(reply.location(), "/login?lang=en", "{uri}");
         }
         let reply = site
-            .post("/lessons/preparation/complete?lang=en", None, "")
+            .post("/lessons/slow-set/preparation/complete?lang=en", None, "")
             .await?;
         assert_eq!(reply.location(), "/login?lang=en");
         let reply = site.get("/lessons/missing?lang=fi", None).await?;
@@ -1222,25 +1388,29 @@ mod tests {
     async fn free_lessons_are_open_and_paid_ones_wait_for_membership() -> TestResult {
         let site = site(false).await?;
         let session = site.register("ann@example.fi").await?;
-        let reply = site.get("/lessons?lang=en", Some(&session)).await?;
+        let reply = site
+            .get("/lessons/slow-set?lang=en", Some(&session))
+            .await?;
         assert!(
             reply
                 .body
-                .contains(r#"<a href="/lessons/preparation?lang=en">Preparation</a>"#)
+                .contains(r#"<a href="/lessons/slow-set/preparation?lang=en">Preparation</a>"#)
         );
         assert!(
             reply
                 .body
-                .contains(r#"<a href="/lessons/opening?lang=en">Opening</a>"#)
+                .contains(r#"<a href="/lessons/slow-set/opening?lang=en">Opening</a>"#)
         );
         assert!(reply.body.contains(
             "<li>Single Whip<span class=\"lesson-meta\"> · Movements 5, 30 · Locked</span></li>"
         ));
 
-        let reply = site.get("/lessons/opening?lang=en", Some(&session)).await?;
+        let reply = site
+            .get("/lessons/slow-set/opening?lang=en", Some(&session))
+            .await?;
         assert_eq!(reply.status, StatusCode::OK);
         assert!(reply.body.contains(
-            r#"<p class="lesson-meta">Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><video "#
+            r#"<p class="lesson-meta"><a href="/lessons/slow-set?lang=en">Slow Set</a> · Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><video "#
         ));
         assert!(
             reply
@@ -1253,16 +1423,16 @@ mod tests {
         assert!(
             reply
                 .body
-                .contains(r#"<a href="/lessons/single-whip?lang=en" rel="next">"#)
+                .contains(r#"<a href="/lessons/slow-set/single-whip?lang=en" rel="next">"#)
         );
         assert!(
             reply
                 .body
-                .contains(r#"<a href="/lessons/opening?lang=fi" lang="fi">"#)
+                .contains(r#"<a href="/lessons/slow-set/opening?lang=fi" lang="fi">"#)
         );
 
         let reply = site
-            .get("/lessons/single-whip?lang=en", Some(&session))
+            .get("/lessons/slow-set/single-whip?lang=en", Some(&session))
             .await?;
         assert_eq!(reply.status, StatusCode::FORBIDDEN);
         assert!(reply.body.contains("This lesson is for members."));
@@ -1286,7 +1456,7 @@ mod tests {
             .await?;
 
         let reply = site
-            .get("/lessons/single-whip?lang=en", Some(&session))
+            .get("/lessons/slow-set/single-whip?lang=en", Some(&session))
             .await?;
         assert_eq!(reply.status, StatusCode::FORBIDDEN);
         assert!(
@@ -1296,37 +1466,149 @@ mod tests {
         );
 
         let reply = site
-            .get("/lessons/preparation?lang=fi", Some(&session))
+            .get("/lessons/slow-set/preparation?lang=fi", Some(&session))
             .await?;
         assert!(reply.body.contains("<h3>Jalat</h3>"));
-        assert!(reply.body.contains(r#"<form class="email-form" method="post" action="/lessons/preparation/complete?lang=fi"><button type="submit">Merkitse harjoitelluksi</button></form>"#));
+        assert!(reply.body.contains(r#"<form class="email-form" method="post" action="/lessons/slow-set/preparation/complete?lang=fi"><button type="submit">Merkitse harjoitelluksi</button></form>"#));
         let reply = site
-            .post("/lessons/preparation/complete?lang=fi", Some(&session), "")
+            .post(
+                "/lessons/slow-set/preparation/complete?lang=fi",
+                Some(&session),
+                "",
+            )
             .await?;
-        assert_eq!(reply.location(), "/lessons/opening?lang=fi");
+        assert_eq!(reply.location(), "/lessons/slow-set/opening?lang=fi");
         let reply = site
-            .get("/lessons/preparation?lang=en", Some(&session))
+            .get("/lessons/slow-set/preparation?lang=en", Some(&session))
             .await?;
         assert!(reply.body.contains("You have passed this lesson."));
 
         // A quiz lesson can't be marked practised outside development.
         let reply = site
-            .post("/lessons/opening/complete?lang=en", Some(&session), "")
+            .post(
+                "/lessons/slow-set/opening/complete?lang=en",
+                Some(&session),
+                "",
+            )
             .await?;
-        assert_eq!(reply.location(), "/lessons/opening?lang=en");
+        assert_eq!(reply.location(), "/lessons/slow-set/opening?lang=en");
         assert_eq!(site.members.accounts.completed(user.id).await?.len(), 1);
 
         site.members
             .accounts
-            .complete(user.id, "opening", Utc::now())
+            .complete(user.id, "slow-set/opening", Utc::now())
             .await?;
         let reply = site
-            .get("/lessons/single-whip?lang=en", Some(&session))
+            .get("/lessons/slow-set/single-whip?lang=en", Some(&session))
             .await?;
         assert_eq!(reply.status, StatusCode::OK);
         assert!(reply.body.contains("Hook the hand"));
-        let reply = site.get("/lessons?lang=en", Some(&session)).await?;
+        let reply = site
+            .get("/lessons/slow-set?lang=en", Some(&session))
+            .await?;
         assert!(reply.body.contains("Movement 1 · Free · Passed</span>"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finishing_a_set_opens_the_next_and_practices_open_on_their_own() -> TestResult {
+        let site = site(false).await?;
+        let session = site.register("ann@example.fi").await?;
+        let user = site
+            .members
+            .accounts
+            .user_by_email("ann@example.fi")
+            .await?
+            .ok_or("no user")?;
+
+        // Without membership only the free practice is open.
+        let reply = site
+            .get("/lessons/practices?lang=en", Some(&session))
+            .await?;
+        assert!(reply.body.contains(r#"<ul class="lessons"><li><a href="/lessons/practices/standing?lang=en">Standing</a><span class="lesson-meta"> · Free</span></li><li>Silk Reeling<span class="lesson-meta"> · Locked</span></li>"#));
+        let reply = site
+            .get("/lessons/practices/standing?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert!(!reply.body.contains("To pass"));
+        assert!(!reply.body.contains("Mark as practised"));
+
+        site.members
+            .accounts
+            .set_member_until(user.id, Some(Utc::now() + Duration::days(30)))
+            .await?;
+        let reply = site
+            .get("/lessons/practices/silk-reeling?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::OK);
+        let reply = site
+            .get("/lessons/practices/push-hands?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+        assert!(reply.body.contains(
+            r#"Opens when you have passed <a href="/lessons/slow-set/opening?lang=en">Opening</a>."#
+        ));
+
+        let reply = site.get("/lessons?lang=en", Some(&session)).await?;
+        assert!(
+            reply.body.contains(
+                "Slow Set</a><span class=\"lesson-meta\"> · 0 of 3 lessons passed</span>"
+            )
+        );
+        assert!(reply.body.contains(r#"Fast Set</a><span class="lesson-meta"> · Opens when <a href="/lessons/slow-set?lang=en">Slow Set</a> is finished.</span>"#));
+        let reply = site
+            .get("/lessons/fast-set?lang=fi", Some(&session))
+            .await?;
+        assert!(reply.body.contains(
+            r#"Avautuu, kun <a href="/lessons/slow-set?lang=fi">Hidas sarja</a> on suoritettu."#
+        ));
+        assert!(
+            reply
+                .body
+                .contains("Nopea avaus<span class=\"lesson-meta\"> · Liike 1 · Lukittu</span>")
+        );
+        let reply = site
+            .get("/lessons/fast-set/fast-opening?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+        assert!(!reply.body.contains("Practise fast-opening"));
+
+        for key in ["slow-set/preparation", "slow-set/opening"] {
+            site.members
+                .accounts
+                .complete(user.id, key, Utc::now())
+                .await?;
+        }
+        let reply = site
+            .get("/lessons/practices/push-hands?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::OK);
+        // single-whip is passed by a review, so it is marked here directly.
+        site.members
+            .accounts
+            .complete(user.id, "slow-set/single-whip", Utc::now())
+            .await?;
+        let reply = site.get("/lessons?lang=en", Some(&session)).await?;
+        assert!(
+            reply
+                .body
+                .contains("Slow Set</a><span class=\"lesson-meta\"> · Finished</span>")
+        );
+        assert!(
+            reply.body.contains(
+                "Fast Set</a><span class=\"lesson-meta\"> · 0 of 1 lessons passed</span>"
+            )
+        );
+
+        // Passing the last lesson of a set leads back to the sets.
+        let reply = site
+            .post(
+                "/lessons/fast-set/fast-opening/complete?lang=en",
+                Some(&session),
+                "",
+            )
+            .await?;
+        assert_eq!(reply.location(), "/lessons?lang=en");
         Ok(())
     }
 
@@ -1334,7 +1616,9 @@ mod tests {
     async fn development_lets_any_lesson_be_marked_and_membership_toggled() -> TestResult {
         let site = site(true).await?;
         let session = site.register("ann@example.fi").await?;
-        let reply = site.get("/lessons/opening?lang=en", Some(&session)).await?;
+        let reply = site
+            .get("/lessons/slow-set/opening?lang=en", Some(&session))
+            .await?;
         assert!(reply.body.contains("Development only: quizzes"));
         assert!(reply.body.contains("Mark as practised"));
 
@@ -1363,20 +1647,24 @@ mod tests {
     #[tokio::test]
     async fn videos_are_shown_to_those_who_may_open_the_lesson() -> TestResult {
         let site = site(false).await?;
-        let reply = site.get("/lessons/opening/video?lang=en", None).await?;
+        let reply = site
+            .get("/lessons/slow-set/opening/video?lang=en", None)
+            .await?;
         assert_eq!(reply.location(), "/login?lang=en");
 
         let session = site.register("ann@example.fi").await?;
-        let reply = site.get("/lessons/opening?lang=fi", Some(&session)).await?;
-        assert!(reply.body.contains(r#"<video class="lesson-video" controls preload="metadata" controlslist="nodownload" src="/lessons/opening/video?lang=fi">"#));
+        let reply = site
+            .get("/lessons/slow-set/opening?lang=fi", Some(&session))
+            .await?;
+        assert!(reply.body.contains(r#"<video class="lesson-video" controls preload="metadata" controlslist="nodownload" src="/lessons/slow-set/opening/video?lang=fi">"#));
         assert!(reply.body.contains("käyttöehtojen vastaista"));
         let reply = site
-            .get("/lessons/preparation?lang=en", Some(&session))
+            .get("/lessons/slow-set/preparation?lang=en", Some(&session))
             .await?;
         assert!(!reply.body.contains("<video"));
 
         let reply = site
-            .get("/lessons/opening/video?lang=en", Some(&session))
+            .get("/lessons/slow-set/opening/video?lang=en", Some(&session))
             .await?;
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body, "not a real video: opening\n");
@@ -1385,7 +1673,7 @@ mod tests {
         assert_eq!(reply.headers[header::CONTENT_DISPOSITION], "inline");
 
         let request = Request::builder()
-            .uri("/lessons/opening/video?lang=en")
+            .uri("/lessons/slow-set/opening/video?lang=en")
             .header(header::COOKIE, format!("session={session}"))
             .header(header::RANGE, "bytes=0-2")
             .header(header::ACCEPT_ENCODING, "gzip, br")
@@ -1397,12 +1685,18 @@ mod tests {
         assert_eq!(&body[..], b"not");
 
         let reply = site
-            .get("/lessons/single-whip/video?lang=en", Some(&session))
+            .get(
+                "/lessons/slow-set/single-whip/video?lang=en",
+                Some(&session),
+            )
             .await?;
         assert_eq!(reply.status, StatusCode::FORBIDDEN);
         assert_eq!(reply.body, "");
         let reply = site
-            .get("/lessons/preparation/video?lang=en", Some(&session))
+            .get(
+                "/lessons/slow-set/preparation/video?lang=en",
+                Some(&session),
+            )
             .await?;
         assert_eq!(reply.status, StatusCode::NOT_FOUND);
         Ok(())
@@ -1467,7 +1761,8 @@ mod tests {
             "/login",
             "/register",
             "/lessons",
-            "/lessons/preparation",
+            "/lessons/slow-set",
+            "/lessons/slow-set/preparation",
             "/account",
         ] {
             let reply = site.get(uri, Some(&session)).await?;

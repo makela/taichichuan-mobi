@@ -1,0 +1,1 @@
+Harjoittele: fast-opening.

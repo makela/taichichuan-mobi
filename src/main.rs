@@ -441,6 +441,12 @@ struct Translations {
     server_error: &'static str,
     video_notice: &'static str,
     video_unsupported: &'static str,
+    lesson_count: &'static str,
+    practice_count: &'static str,
+    set_progress: &'static str,
+    set_finished: &'static str,
+    needs_set: &'static str,
+    needs_lesson: &'static str,
 }
 
 impl Translations {
@@ -484,7 +490,7 @@ impl Translations {
                 passing_review: "send a video for review",
                 previous_lesson: "Previous lesson",
                 next_lesson: "Next lesson",
-                all_lessons: "All lessons",
+                all_lessons: "All sets",
                 login_title: "Log in",
                 register_title: "Register",
                 email_label: "Email address",
@@ -523,6 +529,12 @@ impl Translations {
                 server_error: "Please try again in a while.",
                 video_notice: "The videos are for your own practice only. Downloading or sharing them is against the terms of use.",
                 video_unsupported: "Your browser can't play this video.",
+                lesson_count: "{count} lessons",
+                practice_count: "{count} practices",
+                set_progress: "{passed} of {total} lessons passed",
+                set_finished: "Finished",
+                needs_set: "Opens when {set} is finished.",
+                needs_lesson: "Opens when you have passed {lesson}.",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
@@ -561,7 +573,7 @@ impl Translations {
                 passing_review: "lähetä video arvioitavaksi",
                 previous_lesson: "Edellinen oppitunti",
                 next_lesson: "Seuraava oppitunti",
-                all_lessons: "Kaikki oppitunnit",
+                all_lessons: "Kaikki kokonaisuudet",
                 login_title: "Kirjaudu sisään",
                 register_title: "Rekisteröidy",
                 email_label: "Sähköpostiosoite",
@@ -600,6 +612,12 @@ impl Translations {
                 server_error: "Yritä hetken päästä uudelleen.",
                 video_notice: "Videot ovat vain omaa harjoitteluasi varten. Niiden lataaminen tai jakaminen on käyttöehtojen vastaista.",
                 video_unsupported: "Selaimesi ei pysty toistamaan tätä videota.",
+                lesson_count: "{count} oppituntia",
+                practice_count: "{count} harjoitetta",
+                set_progress: "{passed}/{total} oppituntia läpäisty",
+                set_finished: "Suoritettu",
+                needs_set: "Avautuu, kun {set} on suoritettu.",
+                needs_lesson: "Avautuu, kun {lesson} on läpäisty.",
             },
         }
     }
