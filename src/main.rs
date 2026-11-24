@@ -728,6 +728,20 @@ const PRELOADED_FONTS: &[&str] = &[
     "/static/fonts/gloria-hallelujah-latin.woff2",
 ];
 
+/// Seconds the logo takes to turn once; the same as `.logo`'s animation in
+/// styles.css, which has a `phase-<n>` class for each second of the turn.
+const LOGO_TURN_SECONDS: u64 = 62;
+
+/// The class starting the logo's turn where the clock has it now, so it keeps
+/// turning from page to page instead of starting over on each.
+fn logo_phase(now: std::time::SystemTime) -> String {
+    let millis = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    let seconds = (millis + 500) / 1000 % u128::from(LOGO_TURN_SECONDS);
+    format!("logo phase-{seconds}")
+}
+
 /// `path` is the page's own path, for the links to it in the other languages.
 fn layout(
     language: Language,
@@ -764,7 +778,7 @@ fn layout(
                 }
                 header {
                     // The same file is the favicon, so the logo is kept in one place.
-                    div.logo { (PreEscaped(include_str!("../dist/favicon.svg"))) }
+                    div class=(logo_phase(std::time::SystemTime::now())) { (PreEscaped(include_str!("../dist/favicon.svg"))) }
                     h1 { (t.site_title) }
                     figure.quote {
                         blockquote {
@@ -914,6 +928,29 @@ mod tests {
     fn query(lang: Option<&str>) -> LanguageQuery {
         LanguageQuery {
             lang: lang.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn logo_starts_where_the_clock_has_it() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let at = |millis| logo_phase(UNIX_EPOCH + Duration::from_millis(millis));
+        assert_eq!(at(0), "logo phase-0");
+        assert_eq!(at(1_499), "logo phase-1");
+        assert_eq!(at(1_500), "logo phase-2");
+        assert_eq!(at(61_600), "logo phase-0");
+        assert_eq!(at(62_000 * 1_000 + 30_000), "logo phase-30");
+    }
+
+    #[test]
+    fn styles_have_each_logo_phase() {
+        let styles = include_str!("../dist/styles.css");
+        assert!(styles.contains(&format!(
+            "animation: spin {LOGO_TURN_SECONDS}s linear infinite"
+        )));
+        for second in 1..LOGO_TURN_SECONDS {
+            let rule = format!(".logo.phase-{second} {{ animation-delay: -{second}s; }}");
+            assert!(styles.contains(&rule), "{rule}");
         }
     }
 
@@ -1137,8 +1174,9 @@ mod tests {
             !body.contains("role='banner'"),
             "<header> is already the banner landmark"
         );
+        assert!(body.contains("<div class=\"logo phase-"));
         assert!(body.contains(
-            "<div class=\"logo\"><svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' aria-hidden='true'"
+            "\"><svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 360' aria-hidden='true'"
         ));
         assert!(
             !body.contains("fonts.googleapis.com") && !body.contains("fonts.gstatic.com"),
