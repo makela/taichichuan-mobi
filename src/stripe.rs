@@ -4,7 +4,7 @@
 //! asks Stripe for the subscription's current state rather than trusting the
 //! order the webhooks arrive in.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
