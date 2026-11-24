@@ -57,6 +57,17 @@ is described at the top of `src/lessons.rs`, and `tests/lessons` has a made-up
 example. The server refuses to start if the lessons have mistakes, such as a
 movement in two lessons, and says what is wrong.
 
+A lesson can have a video: `<slug>/video.mp4`, or `video-en.mp4` and
+`video-fi.mp4` for each language. The site serves it only to those who may open
+the lesson, and a note under it says that downloading or sharing the
+videos is against the terms of use. Before adding a video, remove its metadata,
+which in phone videos includes the location, and move its index to the start so
+that it starts playing before it has all loaded:
+
+```sh
+ffmpeg -i original.mp4 -map_metadata -1 -c copy -movflags +faststart video.mp4
+```
+
 ### Members
 
 With `CONTENT_DIR` set, visitors can register and log in at `/register` and

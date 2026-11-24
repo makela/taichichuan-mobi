@@ -5,7 +5,12 @@
 //! lessons.toml           the lessons in the order they are taken
 //! <slug>/en.md           lesson text in English, Markdown
 //! <slug>/fi.md           lesson text in Finnish
+//! <slug>/video.mp4       optional video, the same in both languages, or
+//! <slug>/video-en.mp4    a video in English
+//! <slug>/video-fi.mp4    and in Finnish
 //! ```
+//!
+//! A video in one language only is shown in both.
 //!
 //! Each lesson in `lessons.toml`:
 //!
@@ -21,7 +26,7 @@
 use pulldown_cmark::{Event, Options, Parser};
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::Language;
 
@@ -73,6 +78,8 @@ pub struct Lesson {
     titles: Titles,
     /// Rendered from Markdown, in English and in Finnish.
     html: [String; 2],
+    /// The video files for English and Finnish, if any.
+    videos: Option<[PathBuf; 2]>,
 }
 
 impl Lesson {
@@ -89,6 +96,31 @@ impl Lesson {
             Language::En => &self.html[0],
             Language::Fi => &self.html[1],
         }
+    }
+
+    /// The lesson's video file in `language`, if it has a video.
+    pub fn video(&self, language: Language) -> Option<&Path> {
+        let [en, fi] = self.videos.as_ref()?;
+        Some(match language {
+            Language::En => en,
+            Language::Fi => fi,
+        })
+    }
+}
+
+/// The videos of the lesson in `lesson_dir`, for English and Finnish.
+fn find_videos(lesson_dir: &Path) -> Option<[PathBuf; 2]> {
+    let existing = |name: &str| {
+        let path = lesson_dir.join(name);
+        path.is_file().then_some(path)
+    };
+    let common = existing("video.mp4");
+    let en = existing("video-en.mp4").or_else(|| common.clone());
+    let fi = existing("video-fi.mp4").or(common);
+    match (en, fi) {
+        (Some(en), Some(fi)) => Some([en, fi]),
+        (Some(only), None) | (None, Some(only)) => Some([only.clone(), only]),
+        (None, None) => None,
     }
 }
 
@@ -154,6 +186,7 @@ impl Lessons {
                     .map_err(|error| format!("{}: {error}", path.display()))
             };
             let html = [text("en")?, text("fi")?];
+            let videos = find_videos(&dir.join(slug));
             lessons.push(Lesson {
                 slug: entry.slug,
                 movements: entry.movements,
@@ -161,6 +194,7 @@ impl Lessons {
                 free: entry.free,
                 titles: entry.title,
                 html,
+                videos,
             });
         }
         Ok(Self(lessons))
@@ -326,6 +360,17 @@ mod tests {
         assert!(!whip.free);
         assert_eq!(whip.title(Language::Fi), "Yksittäinen ruoska");
         assert!(lessons.find("missing").is_none());
+
+        let (_, preparation) = lessons.find("preparation").ok_or("preparation")?;
+        assert_eq!(preparation.video(Language::En), None);
+        let (_, opening) = lessons.find("opening").ok_or("opening")?;
+        let video = Path::new("tests/lessons/opening/video.mp4");
+        assert_eq!(opening.video(Language::En), Some(video));
+        assert_eq!(opening.video(Language::Fi), Some(video));
+        // single-whip has a Finnish video only, shown in English too.
+        let video = Path::new("tests/lessons/single-whip/video-fi.mp4");
+        assert_eq!(whip.video(Language::En), Some(video));
+        assert_eq!(whip.video(Language::Fi), Some(video));
         Ok(())
     }
 

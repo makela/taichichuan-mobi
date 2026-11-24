@@ -6,7 +6,7 @@
 
 use axum::{
     Form, Router,
-    extract::{Path as UrlPath, Query, State, rejection::QueryRejection},
+    extract::{Path as UrlPath, Query, Request, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -17,6 +17,8 @@ use maud::{Markup, PreEscaped, html};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 use crate::accounts::{self, Accounts, LinkKind, SESSION_LIFETIME, User};
 use crate::lessons::{Access, Learner, Lesson, Lessons, Passing};
@@ -110,7 +112,8 @@ pub fn router(members: Arc<Members>) -> Router {
         .route("/account/delete", post(delete_account))
         .route("/lessons", get(lesson_list))
         .route("/lessons/{slug}", get(lesson_page))
-        .route("/lessons/{slug}/complete", post(complete_lesson));
+        .route("/lessons/{slug}/complete", post(complete_lesson))
+        .route("/lessons/{slug}/video", get(lesson_video));
     let router = if members.dev {
         router.route("/account/dev-membership", post(dev_membership))
     } else {
@@ -787,6 +790,13 @@ async fn lesson_page(
         h2 { (lesson.title(language)) }
         @match access {
             Access::Open | Access::Done => {
+                @if lesson.video(language).is_some() {
+                    video.lesson-video controls preload="metadata" controlslist="nodownload"
+                        src=(href(&format!("/lessons/{}/video", lesson.slug), language)) {
+                        (t.video_unsupported)
+                    }
+                    p.video-notice { (t.video_notice) }
+                }
                 div.lesson-text { (PreEscaped(lesson.html(language))) }
                 p.passing { (t.passing_label) ": " (passing_text(t, lesson.passing)) }
                 @if access == Access::Done {
@@ -831,6 +841,40 @@ async fn lesson_page(
         ),
     )
         .into_response())
+}
+
+/// A lesson's video, for those who may open the lesson. The browser asks
+/// for it in parts (Range requests) as it plays and seeks.
+async fn lesson_video(
+    State(members): State<Arc<Members>>,
+    UrlPath(slug): UrlPath<String>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    request: Request,
+) -> Page {
+    let visit = members.visit(query, request.headers()).await?;
+    let language = visit.language;
+    let Some((position, lesson)) = members.lessons.find(&slug) else {
+        return Ok(not_found(language));
+    };
+    let access = members.access(&visit).await?.get(position).copied();
+    match access {
+        Some(access) if access.is_open() => {}
+        Some(Access::NeedsLogin) | None => return Ok(redirect("/login", language)),
+        Some(_) => return Ok(StatusCode::FORBIDDEN.into_response()),
+    }
+    let Some(path) = lesson.video(language) else {
+        return Ok(not_found(language));
+    };
+    let Ok(mut response) = ServeFile::new(path).oneshot(request).await;
+    let response_headers = response.headers_mut();
+    for (name, value) in page_headers() {
+        response_headers.insert(name, value);
+    }
+    response_headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline"),
+    );
+    Ok(response.into_response())
 }
 
 async fn complete_lesson(
@@ -1195,7 +1239,14 @@ mod tests {
 
         let reply = site.get("/lessons/opening?lang=en", Some(&session)).await?;
         assert_eq!(reply.status, StatusCode::OK);
-        assert!(reply.body.contains(r#"<p class="lesson-meta">Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><div class="lesson-text"><p>Raise the arms.</p>"#));
+        assert!(reply.body.contains(
+            r#"<p class="lesson-meta">Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><video "#
+        ));
+        assert!(
+            reply
+                .body
+                .contains(r#"<div class="lesson-text"><p>Raise the arms.</p>"#)
+        );
         assert!(reply.body.contains("To pass: answer a quiz"));
         // Quizzes aren't made yet, so outside development there is no way to pass it.
         assert!(!reply.body.contains("Mark as practised"));
@@ -1305,6 +1356,54 @@ mod tests {
 
         let production = self::site(false).await?;
         let reply = production.post("/account/dev-membership", None, "").await?;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn videos_are_shown_to_those_who_may_open_the_lesson() -> TestResult {
+        let site = site(false).await?;
+        let reply = site.get("/lessons/opening/video?lang=en", None).await?;
+        assert_eq!(reply.location(), "/login?lang=en");
+
+        let session = site.register("ann@example.fi").await?;
+        let reply = site.get("/lessons/opening?lang=fi", Some(&session)).await?;
+        assert!(reply.body.contains(r#"<video class="lesson-video" controls preload="metadata" controlslist="nodownload" src="/lessons/opening/video?lang=fi">"#));
+        assert!(reply.body.contains("käyttöehtojen vastaista"));
+        let reply = site
+            .get("/lessons/preparation?lang=en", Some(&session))
+            .await?;
+        assert!(!reply.body.contains("<video"));
+
+        let reply = site
+            .get("/lessons/opening/video?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body, "not a real video: opening\n");
+        assert_eq!(reply.headers[header::CONTENT_TYPE], "video/mp4");
+        assert_eq!(reply.headers[header::CACHE_CONTROL], "private, no-store");
+        assert_eq!(reply.headers[header::CONTENT_DISPOSITION], "inline");
+
+        let request = Request::builder()
+            .uri("/lessons/opening/video?lang=en")
+            .header(header::COOKIE, format!("session={session}"))
+            .header(header::RANGE, "bytes=0-2")
+            .header(header::ACCEPT_ENCODING, "gzip, br")
+            .body(Body::empty())?;
+        let response = site.app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        assert_eq!(&body[..], b"not");
+
+        let reply = site
+            .get("/lessons/single-whip/video?lang=en", Some(&session))
+            .await?;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+        assert_eq!(reply.body, "");
+        let reply = site
+            .get("/lessons/preparation/video?lang=en", Some(&session))
+            .await?;
         assert_eq!(reply.status, StatusCode::NOT_FOUND);
         Ok(())
     }

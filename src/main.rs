@@ -180,7 +180,7 @@ const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000";
 /// The logo is inline SVG markup, which needs no source of its own. Framing
 /// by other sites, forms to other sites and `<base>` are refused.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; font-src 'self'; \
-    img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+    img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 fn app(static_dir: &Path, dev: bool, site_url: &str, members: Option<Arc<Members>>) -> Router {
     assets::init(static_dir);
@@ -231,10 +231,14 @@ fn app(static_dir: &Path, dev: bool, site_url: &str, members: Option<Arc<Members
         ))
     };
     // Outermost, so that live reload can still inject into uncompressed HTML.
-    // Images are already skipped by the default predicate, and so are fonts here.
+    // Images are already skipped by the default predicate, and so are fonts and
+    // videos here; compressing videos would also break requests for parts.
     app.layer(
-        CompressionLayer::new()
-            .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/woff2"))),
+        CompressionLayer::new().compress_when(
+            DefaultPredicate::new()
+                .and(NotForContentType::const_new("font/woff2"))
+                .and(NotForContentType::const_new("video/")),
+        ),
     )
 }
 
@@ -435,6 +439,8 @@ struct Translations {
     lesson_done: &'static str,
     server_error_title: &'static str,
     server_error: &'static str,
+    video_notice: &'static str,
+    video_unsupported: &'static str,
 }
 
 impl Translations {
@@ -515,6 +521,8 @@ impl Translations {
                 lesson_done: "You have passed this lesson.",
                 server_error_title: "Something went wrong",
                 server_error: "Please try again in a while.",
+                video_notice: "The videos are for your own practice only. Downloading or sharing them is against the terms of use.",
+                video_unsupported: "Your browser can't play this video.",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
@@ -590,6 +598,8 @@ impl Translations {
                 lesson_done: "Olet läpäissyt tämän oppitunnin.",
                 server_error_title: "Jokin meni vikaan",
                 server_error: "Yritä hetken päästä uudelleen.",
+                video_notice: "Videot ovat vain omaa harjoitteluasi varten. Niiden lataaminen tai jakaminen on käyttöehtojen vastaista.",
+                video_unsupported: "Selaimesi ei pysty toistamaan tätä videota.",
             },
         }
     }
