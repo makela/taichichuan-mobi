@@ -1,0 +1,22 @@
+# Made-up lessons for the tests. The real lessons are kept outside this
+# repository, see src/lessons.rs for the format.
+
+[[lesson]]
+slug = "preparation"
+title = { en = "Preparation", fi = "Valmistautuminen" }
+movements = [1]
+passing = "practice"
+free = true
+
+[[lesson]]
+slug = "opening"
+title = { en = "Opening", fi = "Avaus" }
+movements = [2, 3]
+passing = "quiz"
+free = true
+
+[[lesson]]
+slug = "single-whip"
+title = { en = "Single Whip", fi = "Yksittäinen ruoska" }
+movements = [5, 30]
+passing = "review"

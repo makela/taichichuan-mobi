@@ -1,14 +1,16 @@
 mod assets;
+mod lessons;
 
 use axum::{
     Router,
-    extract::{Query, Request, State, rejection::QueryRejection},
+    extract::{Path as UrlPath, Query, Request, State, rejection::QueryRejection},
     handler::HandlerWithoutStateExt,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
+use lessons::{Lesson, Lessons, Passing};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
 use std::path::Path;
@@ -62,7 +64,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
     let dev = env_flag("DEV");
-    let app = app(Path::new(&static_dir), dev, &site_url);
+    let lessons = match std::env::var("CONTENT_DIR") {
+        // Until members can log in, the lessons would be open to everyone.
+        Ok(content_dir) if !dev => {
+            tracing::warn!(%content_dir, "Lessons are only shown in dev mode for now, ignoring CONTENT_DIR");
+            None
+        }
+        Ok(content_dir) => match Lessons::load(Path::new(&content_dir)) {
+            Ok(lessons) => {
+                tracing::info!(%content_dir, count = lessons.all().len(), "Loaded lessons");
+                Some(Arc::new(lessons))
+            }
+            Err(error) => {
+                tracing::error!(%content_dir, %error, "Failed to load lessons, check CONTENT_DIR");
+                return Err(format!("failed to load lessons: {error}").into());
+            }
+        },
+        Err(_) => None,
+    };
+    let app = app(Path::new(&static_dir), dev, &site_url, lessons);
     // Behind a reverse proxy, set HOST=127.0.0.1 to accept local connections only.
     let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
@@ -156,7 +176,7 @@ const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000";
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; font-src 'self'; \
     img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
+fn app(static_dir: &Path, dev: bool, site_url: &str, lessons: Option<Arc<Lessons>>) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
         .nest_service(
@@ -175,12 +195,21 @@ fn app(static_dir: &Path, dev: bool, site_url: &str) -> Router {
         .route("/", get(index))
         .fallback(handler_404)
         .with_state(site_url)
-        .merge(static_files)
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-        );
+        .merge(static_files);
+    let app = match lessons {
+        Some(lessons) => app.merge(
+            Router::new()
+                .route("/lessons", get(lesson_list))
+                .route("/lessons/{slug}", get(lesson_page))
+                .with_state(lessons),
+        ),
+        None => app,
+    };
+    let app = app.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+    );
     // Browsers trust the Content-Type of responses rather than guessing from content.
     let app = app.layer(SetResponseHeaderLayer::overriding(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -357,6 +386,18 @@ struct Translations {
     not_found: &'static str,
     front_page_link: &'static str,
     business_id_label: &'static str,
+    lessons_title: &'static str,
+    lesson_number: &'static str,
+    movement: &'static str,
+    movements: &'static str,
+    free: &'static str,
+    passing_label: &'static str,
+    passing_practice: &'static str,
+    passing_quiz: &'static str,
+    passing_review: &'static str,
+    previous_lesson: &'static str,
+    next_lesson: &'static str,
+    all_lessons: &'static str,
 }
 
 impl Translations {
@@ -388,6 +429,18 @@ impl Translations {
                 not_found: "The page you are looking for does not exist. Try {front_page} instead.",
                 front_page_link: "front page",
                 business_id_label: "Business ID",
+                lessons_title: "Lessons",
+                lesson_number: "Lesson {number}",
+                movement: "Movement",
+                movements: "Movements",
+                free: "Free",
+                passing_label: "To pass",
+                passing_practice: "practise and mark it done",
+                passing_quiz: "answer a quiz",
+                passing_review: "send a video for review",
+                previous_lesson: "Previous lesson",
+                next_lesson: "Next lesson",
+                all_lessons: "All lessons",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
@@ -415,6 +468,18 @@ impl Translations {
                 not_found: "Etsimääsi sivua ei ole olemassa. Kokeile {front_page}.",
                 front_page_link: "etusivua",
                 business_id_label: "Y-tunnus",
+                lessons_title: "Oppitunnit",
+                lesson_number: "Oppitunti {number}",
+                movement: "Liike",
+                movements: "Liikkeet",
+                free: "Maksuton",
+                passing_label: "Läpäisy",
+                passing_practice: "harjoittele ja merkitse tehdyksi",
+                passing_quiz: "vastaa kysymyksiin",
+                passing_review: "lähetä video arvioitavaksi",
+                previous_lesson: "Edellinen oppitunti",
+                next_lesson: "Seuraava oppitunti",
+                all_lessons: "Kaikki oppitunnit",
             },
         }
     }
@@ -471,9 +536,11 @@ const PRELOADED_FONTS: &[&str] = &[
     "/static/fonts/gloria-hallelujah-latin.woff2",
 ];
 
+/// `path` is the page's own path, for the links to it in the other languages.
 fn layout(
     language: Language,
     t: &Translations,
+    path: &str,
     page_title: &str,
     head: &Markup,
     content: &Markup,
@@ -499,9 +566,9 @@ fn layout(
             }
             body {
                 nav aria-label=(t.language_label) {
-                    a href="/?lang=en" lang="en" aria-current=[(language == Language::En).then_some("page")] { "In English" }
+                    a href={ (path) "?lang=en" } lang="en" aria-current=[(language == Language::En).then_some("page")] { "In English" }
                     " · "
-                    a href="/?lang=fi" lang="fi" aria-current=[(language == Language::Fi).then_some("page")] { "suomeksi" }
+                    a href={ (path) "?lang=fi" } lang="fi" aria-current=[(language == Language::Fi).then_some("page")] { "suomeksi" }
                 }
                 header {
                     // The same file is the favicon, so the logo is kept in one place.
@@ -561,6 +628,7 @@ async fn index(
         layout(
             language,
             &t,
+            "/",
             t.site_title,
             // For search engines and link previews. Each language has its own URL;
             // plain / picks one from the browser's languages.
@@ -604,8 +672,14 @@ async fn index(
 async fn handler_404(
     query: Result<Query<LanguageQuery>, QueryRejection>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
+) -> Response {
+    not_found(Language::from_request(
+        &LanguageQuery::or_default(query),
+        &headers,
+    ))
+}
+
+fn not_found(language: Language) -> Response {
     let t = Translations::for_language(language);
     let front_page_href = format!("/?lang={}", language.code());
     let front_page_links = [("front_page", front_page_href.as_str(), t.front_page_link)];
@@ -616,6 +690,7 @@ async fn handler_404(
         layout(
             language,
             &t,
+            "/",
             t.not_found_title,
             &html! {},
             &html! {
@@ -624,6 +699,131 @@ async fn handler_404(
             },
         ),
     )
+        .into_response()
+}
+
+/// Headers for lesson pages, which are for members only: browsers and
+/// proxies don't store them, and search engines don't index them.
+fn lesson_headers() -> [(header::HeaderName, HeaderValue); 3] {
+    [
+        (header::VARY, HeaderValue::from_static("Accept-Language")),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        ),
+        (
+            header::HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex"),
+        ),
+    ]
+}
+
+fn lesson_href(lesson: &Lesson, language: Language) -> String {
+    format!("/lessons/{}?lang={}", lesson.slug, language.code())
+}
+
+/// E.g. "Movement 1" or "Movements 5, 30".
+fn movements_text(t: &Translations, movements: &[u8]) -> String {
+    let label = if movements.len() == 1 {
+        t.movement
+    } else {
+        t.movements
+    };
+    let numbers: Vec<String> = movements.iter().map(u8::to_string).collect();
+    format!("{label} {}", numbers.join(", "))
+}
+
+fn passing_text(t: &Translations, passing: Passing) -> &'static str {
+    match passing {
+        Passing::Practice => t.passing_practice,
+        Passing::Quiz => t.passing_quiz,
+        Passing::Review => t.passing_review,
+    }
+}
+
+async fn lesson_list(
+    State(lessons): State<Arc<Lessons>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Response {
+    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
+    let t = Translations::for_language(language);
+    (
+        lesson_headers(),
+        layout(
+            language,
+            &t,
+            "/lessons",
+            t.lessons_title,
+            &html! {},
+            &html! {
+                h2 { (t.lessons_title) }
+                ol.lessons {
+                    @for lesson in lessons.all() {
+                        li {
+                            a href=(lesson_href(lesson, language)) { (lesson.title(language)) }
+                            span.lesson-meta {
+                                " · " (movements_text(&t, &lesson.movements))
+                                @if lesson.free { " · " (t.free) }
+                            }
+                        }
+                    }
+                }
+            },
+        ),
+    )
+        .into_response()
+}
+
+async fn lesson_page(
+    State(lessons): State<Arc<Lessons>>,
+    UrlPath(slug): UrlPath<String>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Response {
+    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
+    let Some((position, lesson)) = lessons.find(&slug) else {
+        return not_found(language);
+    };
+    let t = Translations::for_language(language);
+    let previous = position
+        .checked_sub(1)
+        .and_then(|previous| lessons.all().get(previous));
+    let next = lessons.all().get(position + 1);
+    let number = t
+        .lesson_number
+        .replace("{number}", &(position + 1).to_string());
+    (
+        lesson_headers(),
+        layout(
+            language,
+            &t,
+            &format!("/lessons/{}", lesson.slug),
+            lesson.title(language),
+            &html! {},
+            &html! {
+                p.lesson-meta {
+                    (number) " · " (movements_text(&t, &lesson.movements))
+                    @if lesson.free { " · " (t.free) }
+                }
+                h2 { (lesson.title(language)) }
+                div.lesson-text { (PreEscaped(lesson.html(language))) }
+                p.passing { (t.passing_label) ": " (passing_text(&t, lesson.passing)) }
+                p.lesson-nav {
+                    @if let Some(previous) = previous {
+                        a href=(lesson_href(previous, language)) rel="prev" { "← " (t.previous_lesson) }
+                        " · "
+                    }
+                    a href={ "/lessons?lang=" (language.code()) } { (t.all_lessons) }
+                    @if let Some(next) = next {
+                        " · "
+                        a href=(lesson_href(next, language)) rel="next" { (t.next_lesson) " →" }
+                    }
+                }
+            },
+        ),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -800,7 +1000,7 @@ mod tests {
         accept_language: Option<&'static str>,
     ) -> Result<(StatusCode, HeaderMap, String), Box<dyn std::error::Error>> {
         get_from(
-            app(Path::new("dist"), false, TEST_SITE_URL),
+            app(Path::new("dist"), false, TEST_SITE_URL, None),
             uri,
             accept_language,
         )
@@ -1163,7 +1363,7 @@ mod tests {
     async fn text_responses_are_compressed() -> TestResult {
         for uri in ["/", "/?lang=fi", "/static/styles.css", "/does-not-exist"] {
             let (encoding, vary) = encoding_of(
-                app(Path::new("dist"), false, TEST_SITE_URL),
+                app(Path::new("dist"), false, TEST_SITE_URL, None),
                 uri,
                 "gzip, br",
             )
@@ -1174,8 +1374,12 @@ mod tests {
                 "{uri}: {vary}"
             );
         }
-        let (encoding, vary) =
-            encoding_of(app(Path::new("dist"), false, TEST_SITE_URL), "/", "gzip").await?;
+        let (encoding, vary) = encoding_of(
+            app(Path::new("dist"), false, TEST_SITE_URL, None),
+            "/",
+            "gzip",
+        )
+        .await?;
         assert_eq!(encoding.as_deref(), Some("gzip"));
         assert!(vary.contains("Accept-Language"), "{vary}");
         Ok(())
@@ -1189,7 +1393,7 @@ mod tests {
             "/static/apple-touch-icon.png",
         ] {
             let (encoding, _) = encoding_of(
-                app(Path::new("dist"), false, TEST_SITE_URL),
+                app(Path::new("dist"), false, TEST_SITE_URL, None),
                 uri,
                 "gzip, br",
             )
@@ -1211,7 +1415,7 @@ mod tests {
     #[tokio::test]
     async fn dev_mode_disables_static_caching() -> TestResult {
         let (_, headers, _) = get_from(
-            app(Path::new("dist"), true, TEST_SITE_URL),
+            app(Path::new("dist"), true, TEST_SITE_URL, None),
             &assets::url("styles.css"),
             None,
         )
@@ -1230,7 +1434,7 @@ mod tests {
                 "{uri}"
             );
             let (_, headers, _) =
-                get_from(app(Path::new("dist"), true, TEST_SITE_URL), uri, None).await?;
+                get_from(app(Path::new("dist"), true, TEST_SITE_URL, None), uri, None).await?;
             assert!(
                 !headers.contains_key(header::STRICT_TRANSPORT_SECURITY),
                 "{uri}"
@@ -1253,7 +1457,7 @@ mod tests {
             assert!(!policy.contains("  "), "{uri}: {policy}");
 
             let (_, headers, _) =
-                get_from(app(Path::new("dist"), true, TEST_SITE_URL), uri, None).await?;
+                get_from(app(Path::new("dist"), true, TEST_SITE_URL, None), uri, None).await?;
             assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
             assert!(
                 !headers.contains_key(header::CONTENT_SECURITY_POLICY),
@@ -1291,6 +1495,79 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn lessons_app() -> Result<Router, String> {
+        let lessons = Lessons::load(Path::new("tests/lessons"))?;
+        Ok(app(
+            Path::new("dist"),
+            false,
+            TEST_SITE_URL,
+            Some(Arc::new(lessons)),
+        ))
+    }
+
+    #[tokio::test]
+    async fn lessons_are_not_served_without_content() -> TestResult {
+        for uri in ["/lessons", "/lessons/preparation"] {
+            let (status, _, _) = get(uri, None).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lesson_list_links_every_lesson_in_order() -> TestResult {
+        let (status, headers, body) = get_from(lessons_app()?, "/lessons?lang=fi", None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        assert_eq!(headers["x-robots-tag"], "noindex");
+        assert!(body.contains("<title>Oppitunnit ☯ Taiji-Timo</title>"));
+        assert!(body.contains(
+            r#"<li><a href="/lessons/preparation?lang=fi">Valmistautuminen</a><span class="lesson-meta"> · Liike 1 · Maksuton</span></li>"#
+        ));
+        let positions: Vec<Option<usize>> = ["preparation", "opening", "single-whip"]
+            .iter()
+            .map(|slug| body.find(&format!(r#"href="/lessons/{slug}?lang=fi""#)))
+            .collect();
+        assert!(positions.iter().all(Option::is_some), "{positions:?}");
+        assert!(positions.is_sorted(), "{positions:?}");
+        assert!(body.contains("Liikkeet 5, 30</span>"));
+        assert!(body.contains(r#"<a href="/lessons?lang=en" lang="en">"#));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lesson_page_shows_text_and_links_to_neighbours() -> TestResult {
+        let (status, headers, body) =
+            get_from(lessons_app()?, "/lessons/opening?lang=en", None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        assert!(body.contains("<title>Opening ☯ Taiji-Timo</title>"));
+        assert!(body.contains(
+            r#"<p class="lesson-meta">Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><div class="lesson-text"><p>Raise the arms.</p>"#
+        ));
+        assert!(body.contains("To pass: answer a quiz"));
+        assert!(body.contains(r#"<a href="/lessons/preparation?lang=en" rel="prev">"#));
+        assert!(body.contains(r#"<a href="/lessons/single-whip?lang=en" rel="next">"#));
+        assert!(body.contains(r#"<a href="/lessons/opening?lang=fi" lang="fi">"#));
+        assert!(!body.contains("<script"));
+
+        let (_, _, first) = get_from(lessons_app()?, "/lessons/preparation", Some("fi")).await?;
+        assert!(first.contains("<h3>Jalat</h3>"));
+        assert!(!first.contains(r#"rel="prev""#));
+        let (_, _, last) = get_from(lessons_app()?, "/lessons/single-whip", None).await?;
+        assert!(last.contains("To pass: send a video for review"));
+        assert!(!last.contains(r#"rel="next""#));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_lesson_renders_translated_404() -> TestResult {
+        let (status, _, body) = get_from(lessons_app()?, "/lessons/missing?lang=fi", None).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("<title>Sivua ei löydy ☯ Taiji-Timo</title>"));
         Ok(())
     }
 }

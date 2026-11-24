@@ -47,6 +47,19 @@ module.
 - Fonts are self-hosted in `dist/fonts` (SIL Open Font License). The Latin files
   in `PRELOADED_FONTS` must match the `@font-face` URLs in `styles.css`.
 
+### Lessons
+
+The lessons of the form are members' material and are not in this repository.
+They are read at start-up from the directory in `CONTENT_DIR`: a
+`lessons.toml` listing the lessons in order, and each lesson's text in
+`<slug>/en.md` and `<slug>/fi.md` (Markdown; subheadings with `###`). The format
+is described at the top of `src/lessons.rs`, and `tests/lessons` has a made-up
+example. The server refuses to start if the lessons have mistakes, such as a
+movement in two lessons, and says what is wrong.
+
+For now the lessons are shown at `/lessons` in development mode only, as there
+are no member logins yet.
+
 Files listed in `VERSIONED_FILES` (`src/assets.rs`) get a content hash in their
 URL and are cached for a year, so add new linked files there.
 
