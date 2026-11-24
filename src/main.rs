@@ -1,17 +1,21 @@
+mod accounts;
 mod assets;
+mod db;
 mod lessons;
+mod mail;
+mod members;
 
 use axum::{
     Router,
-    extract::{Path as UrlPath, Query, Request, State, rejection::QueryRejection},
+    extract::{Query, Request, State, rejection::QueryRejection},
     handler::HandlerWithoutStateExt,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
-use lessons::{Lesson, Lessons, Passing};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use members::Members;
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -51,7 +55,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let static_dir = std::env::var("STATIC_DIR").unwrap_or("dist".to_string());
-    let site_url = std::env::var("SITE_URL").unwrap_or(DEFAULT_SITE_URL.to_string());
+    let dev = env_flag("DEV");
+    let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
+    let port = std::env::var("PORT").unwrap_or("3000".to_string());
+    // In development, links in emails lead to this computer.
+    let site_url = std::env::var("SITE_URL").unwrap_or(if dev {
+        format!("http://localhost:{port}")
+    } else {
+        DEFAULT_SITE_URL.to_string()
+    });
     tracing::info!(%static_dir, %site_url, "Site settings");
     // A wrong STATIC_DIR would otherwise serve pages without styles or photos.
     let missing = assets::missing(Path::new(&static_dir));
@@ -63,29 +75,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let dev = env_flag("DEV");
-    let lessons = match std::env::var("CONTENT_DIR") {
-        // Until members can log in, the lessons would be open to everyone.
+    let members = match std::env::var("CONTENT_DIR") {
+        // Until members can pay, the lessons and accounts are for trying out.
         Ok(content_dir) if !dev => {
             tracing::warn!(%content_dir, "Lessons are only shown in dev mode for now, ignoring CONTENT_DIR");
             None
         }
-        Ok(content_dir) => match Lessons::load(Path::new(&content_dir)) {
-            Ok(lessons) => {
-                tracing::info!(%content_dir, count = lessons.all().len(), "Loaded lessons");
-                Some(Arc::new(lessons))
-            }
+        Ok(content_dir) => match Members::from_env(Path::new(&content_dir), &site_url, dev).await {
+            Ok(members) => Some(Arc::new(members)),
             Err(error) => {
-                tracing::error!(%content_dir, %error, "Failed to load lessons, check CONTENT_DIR");
-                return Err(format!("failed to load lessons: {error}").into());
+                tracing::error!(%content_dir, %error, "Failed to set up the lessons");
+                return Err(error.into());
             }
         },
         Err(_) => None,
     };
-    let app = app(Path::new(&static_dir), dev, &site_url, lessons);
+    let app = app(Path::new(&static_dir), dev, &site_url, members);
     // Behind a reverse proxy, set HOST=127.0.0.1 to accept local connections only.
-    let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
-    let port = std::env::var("PORT").unwrap_or("3000".to_string());
     let bind_addr = if host.contains(':') {
         format!("[{host}]:{port}") // IPv6
     } else {
@@ -172,11 +178,11 @@ const STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000";
 
 /// The page loads only its own styles, fonts and images, and runs no scripts.
 /// The logo is inline SVG markup, which needs no source of its own. Framing
-/// by other sites, forms and `<base>` are refused.
+/// by other sites, forms to other sites and `<base>` are refused.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; font-src 'self'; \
-    img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
-fn app(static_dir: &Path, dev: bool, site_url: &str, lessons: Option<Arc<Lessons>>) -> Router {
+fn app(static_dir: &Path, dev: bool, site_url: &str, members: Option<Arc<Members>>) -> Router {
     assets::init(static_dir);
     let static_files = Router::new()
         .nest_service(
@@ -196,13 +202,8 @@ fn app(static_dir: &Path, dev: bool, site_url: &str, lessons: Option<Arc<Lessons
         .fallback(handler_404)
         .with_state(site_url)
         .merge(static_files);
-    let app = match lessons {
-        Some(lessons) => app.merge(
-            Router::new()
-                .route("/lessons", get(lesson_list))
-                .route("/lessons/{slug}", get(lesson_page))
-                .with_state(lessons),
-        ),
+    let app = match members {
+        Some(members) => app.merge(members::router(members)),
         None => app,
     };
     let app = app.layer(
@@ -268,7 +269,7 @@ async fn cache_static(State(dev): State<bool>, request: Request, next: Next) -> 
     response
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Language {
     En,
     Fi,
@@ -398,9 +399,46 @@ struct Translations {
     previous_lesson: &'static str,
     next_lesson: &'static str,
     all_lessons: &'static str,
+    login_title: &'static str,
+    register_title: &'static str,
+    email_label: &'static str,
+    login_intro: &'static str,
+    register_intro: &'static str,
+    send_link: &'static str,
+    no_account: &'static str,
+    have_account: &'static str,
+    link_sent_title: &'static str,
+    link_sent_login: &'static str,
+    link_sent_register: &'static str,
+    invalid_email: &'static str,
+    send_failed: &'static str,
+    confirm_intro: &'static str,
+    link_expired: &'static str,
+    new_link: &'static str,
+    account_title: &'static str,
+    logged_in_as: &'static str,
+    member_until: &'static str,
+    not_member: &'static str,
+    logout: &'static str,
+    delete_title: &'static str,
+    delete_info: &'static str,
+    delete_confirm: &'static str,
+    account_deleted: &'static str,
+    done: &'static str,
+    locked: &'static str,
+    needs_login: &'static str,
+    login_inline: &'static str,
+    register_inline: &'static str,
+    needs_membership: &'static str,
+    needs_previous: &'static str,
+    mark_done: &'static str,
+    lesson_done: &'static str,
+    server_error_title: &'static str,
+    server_error: &'static str,
 }
 
 impl Translations {
+    #[expect(clippy::too_many_lines, reason = "every text in both languages")]
     fn for_language(language: Language) -> Self {
         match language {
             Language::En => Self {
@@ -441,6 +479,42 @@ impl Translations {
                 previous_lesson: "Previous lesson",
                 next_lesson: "Next lesson",
                 all_lessons: "All lessons",
+                login_title: "Log in",
+                register_title: "Register",
+                email_label: "Email address",
+                login_intro: "Enter your email address, and I'll send you a link to log in.",
+                register_intro: "Register with your email address to start the lessons. The first lessons are free.",
+                send_link: "Send the link",
+                no_account: "No account yet? {register}.",
+                have_account: "Already registered? {login}.",
+                link_sent_title: "Check your email",
+                link_sent_login: "If there is an account for this address, a link to log in is on its way to it. Look in the spam folder too if it doesn't arrive.",
+                link_sent_register: "A link to finish registering is on its way to you. Look in the spam folder too if it doesn't arrive.",
+                invalid_email: "Please check the email address.",
+                send_failed: "The email could not be sent. Please try again in a while.",
+                confirm_intro: "Press the button to log in.",
+                link_expired: "This link has expired or has already been used. {login}.",
+                new_link: "Ask for a new link",
+                account_title: "Account",
+                logged_in_as: "Logged in as",
+                member_until: "Membership paid until {date}.",
+                not_member: "No membership yet: the free lessons are open to you.",
+                logout: "Log out",
+                delete_title: "Delete account",
+                delete_info: "Deleting your account removes your email address and your progress for good.",
+                delete_confirm: "I want to delete my account",
+                account_deleted: "Your account has been deleted.",
+                done: "Passed",
+                locked: "Locked",
+                needs_login: "{login} or {register} to start the lessons.",
+                login_inline: "Log in",
+                register_inline: "register",
+                needs_membership: "This lesson is for members.",
+                needs_previous: "This lesson opens when you have passed the one before it.",
+                mark_done: "Mark as practised",
+                lesson_done: "You have passed this lesson.",
+                server_error_title: "Something went wrong",
+                server_error: "Please try again in a while.",
             },
             Language::Fi => Self {
                 site_title: "Taijiopetusta",
@@ -480,6 +554,42 @@ impl Translations {
                 previous_lesson: "Edellinen oppitunti",
                 next_lesson: "Seuraava oppitunti",
                 all_lessons: "Kaikki oppitunnit",
+                login_title: "Kirjaudu sisään",
+                register_title: "Rekisteröidy",
+                email_label: "Sähköpostiosoite",
+                login_intro: "Anna sähköpostiosoitteesi, niin lähetän sinulle linkin, jolla kirjaudut sisään.",
+                register_intro: "Rekisteröidy sähköpostiosoitteellasi aloittaaksesi oppitunnit. Ensimmäiset oppitunnit ovat maksuttomia.",
+                send_link: "Lähetä linkki",
+                no_account: "Eikö sinulla ole vielä tiliä? {register}.",
+                have_account: "Oletko jo rekisteröitynyt? {login}.",
+                link_sent_title: "Tarkista sähköpostisi",
+                link_sent_login: "Jos tällä osoitteella on tili, kirjautumislinkki on matkalla siihen. Katso myös roskapostikansio, jos viestiä ei kuulu.",
+                link_sent_register: "Linkki rekisteröitymisen viimeistelyyn on matkalla sinulle. Katso myös roskapostikansio, jos viestiä ei kuulu.",
+                invalid_email: "Tarkista sähköpostiosoite.",
+                send_failed: "Sähköpostin lähetys epäonnistui. Yritä hetken päästä uudelleen.",
+                confirm_intro: "Kirjaudu sisään painamalla painiketta.",
+                link_expired: "Tämä linkki on vanhentunut tai jo käytetty. {login}.",
+                new_link: "Pyydä uusi linkki",
+                account_title: "Tili",
+                logged_in_as: "Kirjautuneena",
+                member_until: "Jäsenyys maksettu {date} asti.",
+                not_member: "Ei jäsenyyttä vielä: maksuttomat oppitunnit ovat avoinna.",
+                logout: "Kirjaudu ulos",
+                delete_title: "Poista tili",
+                delete_info: "Tilin poistaminen poistaa sähköpostiosoitteesi ja edistymisesi pysyvästi.",
+                delete_confirm: "Haluan poistaa tilini",
+                account_deleted: "Tilisi on poistettu.",
+                done: "Läpäisty",
+                locked: "Lukittu",
+                needs_login: "{login} tai {register} aloittaaksesi oppitunnit.",
+                login_inline: "Kirjaudu sisään",
+                register_inline: "rekisteröidy",
+                needs_membership: "Tämä oppitunti on jäsenille.",
+                needs_previous: "Tämä oppitunti avautuu, kun olet läpäissyt sitä edeltävän.",
+                mark_done: "Merkitse harjoitelluksi",
+                lesson_done: "Olet läpäissyt tämän oppitunnin.",
+                server_error_title: "Jokin meni vikaan",
+                server_error: "Yritä hetken päästä uudelleen.",
             },
         }
     }
@@ -702,130 +812,6 @@ fn not_found(language: Language) -> Response {
         .into_response()
 }
 
-/// Headers for lesson pages, which are for members only: browsers and
-/// proxies don't store them, and search engines don't index them.
-fn lesson_headers() -> [(header::HeaderName, HeaderValue); 3] {
-    [
-        (header::VARY, HeaderValue::from_static("Accept-Language")),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-store"),
-        ),
-        (
-            header::HeaderName::from_static("x-robots-tag"),
-            HeaderValue::from_static("noindex"),
-        ),
-    ]
-}
-
-fn lesson_href(lesson: &Lesson, language: Language) -> String {
-    format!("/lessons/{}?lang={}", lesson.slug, language.code())
-}
-
-/// E.g. "Movement 1" or "Movements 5, 30".
-fn movements_text(t: &Translations, movements: &[u8]) -> String {
-    let label = if movements.len() == 1 {
-        t.movement
-    } else {
-        t.movements
-    };
-    let numbers: Vec<String> = movements.iter().map(u8::to_string).collect();
-    format!("{label} {}", numbers.join(", "))
-}
-
-fn passing_text(t: &Translations, passing: Passing) -> &'static str {
-    match passing {
-        Passing::Practice => t.passing_practice,
-        Passing::Quiz => t.passing_quiz,
-        Passing::Review => t.passing_review,
-    }
-}
-
-async fn lesson_list(
-    State(lessons): State<Arc<Lessons>>,
-    query: Result<Query<LanguageQuery>, QueryRejection>,
-    headers: HeaderMap,
-) -> Response {
-    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
-    let t = Translations::for_language(language);
-    (
-        lesson_headers(),
-        layout(
-            language,
-            &t,
-            "/lessons",
-            t.lessons_title,
-            &html! {},
-            &html! {
-                h2 { (t.lessons_title) }
-                ol.lessons {
-                    @for lesson in lessons.all() {
-                        li {
-                            a href=(lesson_href(lesson, language)) { (lesson.title(language)) }
-                            span.lesson-meta {
-                                " · " (movements_text(&t, &lesson.movements))
-                                @if lesson.free { " · " (t.free) }
-                            }
-                        }
-                    }
-                }
-            },
-        ),
-    )
-        .into_response()
-}
-
-async fn lesson_page(
-    State(lessons): State<Arc<Lessons>>,
-    UrlPath(slug): UrlPath<String>,
-    query: Result<Query<LanguageQuery>, QueryRejection>,
-    headers: HeaderMap,
-) -> Response {
-    let language = Language::from_request(&LanguageQuery::or_default(query), &headers);
-    let Some((position, lesson)) = lessons.find(&slug) else {
-        return not_found(language);
-    };
-    let t = Translations::for_language(language);
-    let previous = position
-        .checked_sub(1)
-        .and_then(|previous| lessons.all().get(previous));
-    let next = lessons.all().get(position + 1);
-    let number = t
-        .lesson_number
-        .replace("{number}", &(position + 1).to_string());
-    (
-        lesson_headers(),
-        layout(
-            language,
-            &t,
-            &format!("/lessons/{}", lesson.slug),
-            lesson.title(language),
-            &html! {},
-            &html! {
-                p.lesson-meta {
-                    (number) " · " (movements_text(&t, &lesson.movements))
-                    @if lesson.free { " · " (t.free) }
-                }
-                h2 { (lesson.title(language)) }
-                div.lesson-text { (PreEscaped(lesson.html(language))) }
-                p.passing { (t.passing_label) ": " (passing_text(&t, lesson.passing)) }
-                p.lesson-nav {
-                    @if let Some(previous) = previous {
-                        a href=(lesson_href(previous, language)) rel="prev" { "← " (t.previous_lesson) }
-                        " · "
-                    }
-                    a href={ "/lessons?lang=" (language.code()) } { (t.all_lessons) }
-                    @if let Some(next) = next {
-                        " · "
-                        a href=(lesson_href(next, language)) rel="next" { (t.next_lesson) " →" }
-                    }
-                }
-            },
-        ),
-    )
-        .into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,7 +845,10 @@ mod tests {
 
     #[test]
     fn accept_language_missing_defaults_to_english() {
-        assert!(Language::from_accept_language(&HeaderMap::new()) == Language::En);
+        assert_eq!(
+            Language::from_accept_language(&HeaderMap::new()),
+            Language::En
+        );
     }
 
     #[test]
@@ -915,7 +904,7 @@ mod tests {
     fn accept_language_non_ascii_header_defaults_to_english() -> TestResult {
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_bytes(b"fi\xff")?);
-        assert!(Language::from_accept_language(&headers) == Language::En);
+        assert_eq!(Language::from_accept_language(&headers), Language::En);
         Ok(())
     }
 
@@ -932,9 +921,9 @@ mod tests {
     #[test]
     fn language_from_code_round_trips_and_ignores_case() {
         for language in [Language::En, Language::Fi] {
-            assert!(Language::from_code(language.code()) == Some(language));
+            assert_eq!(Language::from_code(language.code()), Some(language));
         }
-        assert!(Language::from_code("FI") == Some(Language::Fi));
+        assert_eq!(Language::from_code("FI"), Some(Language::Fi));
         assert!(Language::from_code("sv").is_none());
         assert!(Language::from_code("").is_none());
         assert!(Language::from_code("*").is_none());
@@ -944,17 +933,32 @@ mod tests {
     fn query_parameter_overrides_accept_language() {
         let finnish = accept_language("fi");
         let english = accept_language("en");
-        assert!(Language::from_request(&query(Some("en")), &finnish) == Language::En);
-        assert!(Language::from_request(&query(Some("fi")), &english) == Language::Fi);
-        assert!(Language::from_request(&query(Some("FI")), &english) == Language::Fi);
-        assert!(Language::from_request(&query(None), &finnish) == Language::Fi);
+        assert_eq!(
+            Language::from_request(&query(Some("en")), &finnish),
+            Language::En
+        );
+        assert_eq!(
+            Language::from_request(&query(Some("fi")), &english),
+            Language::Fi
+        );
+        assert_eq!(
+            Language::from_request(&query(Some("FI")), &english),
+            Language::Fi
+        );
+        assert_eq!(Language::from_request(&query(None), &finnish), Language::Fi);
     }
 
     #[test]
     fn unknown_query_language_falls_back_to_english_not_header() {
         let finnish = accept_language("fi");
-        assert!(Language::from_request(&query(Some("sv")), &finnish) == Language::En);
-        assert!(Language::from_request(&query(Some("")), &finnish) == Language::En);
+        assert_eq!(
+            Language::from_request(&query(Some("sv")), &finnish),
+            Language::En
+        );
+        assert_eq!(
+            Language::from_request(&query(Some("")), &finnish),
+            Language::En
+        );
     }
 
     #[test]
@@ -1498,76 +1502,12 @@ mod tests {
         Ok(())
     }
 
-    fn lessons_app() -> Result<Router, String> {
-        let lessons = Lessons::load(Path::new("tests/lessons"))?;
-        Ok(app(
-            Path::new("dist"),
-            false,
-            TEST_SITE_URL,
-            Some(Arc::new(lessons)),
-        ))
-    }
-
     #[tokio::test]
     async fn lessons_are_not_served_without_content() -> TestResult {
         for uri in ["/lessons", "/lessons/preparation"] {
             let (status, _, _) = get(uri, None).await?;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn lesson_list_links_every_lesson_in_order() -> TestResult {
-        let (status, headers, body) = get_from(lessons_app()?, "/lessons?lang=fi", None).await?;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
-        assert_eq!(headers["x-robots-tag"], "noindex");
-        assert!(body.contains("<title>Oppitunnit ☯ Taiji-Timo</title>"));
-        assert!(body.contains(
-            r#"<li><a href="/lessons/preparation?lang=fi">Valmistautuminen</a><span class="lesson-meta"> · Liike 1 · Maksuton</span></li>"#
-        ));
-        let positions: Vec<Option<usize>> = ["preparation", "opening", "single-whip"]
-            .iter()
-            .map(|slug| body.find(&format!(r#"href="/lessons/{slug}?lang=fi""#)))
-            .collect();
-        assert!(positions.iter().all(Option::is_some), "{positions:?}");
-        assert!(positions.is_sorted(), "{positions:?}");
-        assert!(body.contains("Liikkeet 5, 30</span>"));
-        assert!(body.contains(r#"<a href="/lessons?lang=en" lang="en">"#));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn lesson_page_shows_text_and_links_to_neighbours() -> TestResult {
-        let (status, headers, body) =
-            get_from(lessons_app()?, "/lessons/opening?lang=en", None).await?;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
-        assert!(body.contains("<title>Opening ☯ Taiji-Timo</title>"));
-        assert!(body.contains(
-            r#"<p class="lesson-meta">Lesson 2 · Movements 2, 3 · Free</p><h2>Opening</h2><div class="lesson-text"><p>Raise the arms.</p>"#
-        ));
-        assert!(body.contains("To pass: answer a quiz"));
-        assert!(body.contains(r#"<a href="/lessons/preparation?lang=en" rel="prev">"#));
-        assert!(body.contains(r#"<a href="/lessons/single-whip?lang=en" rel="next">"#));
-        assert!(body.contains(r#"<a href="/lessons/opening?lang=fi" lang="fi">"#));
-        assert!(!body.contains("<script"));
-
-        let (_, _, first) = get_from(lessons_app()?, "/lessons/preparation", Some("fi")).await?;
-        assert!(first.contains("<h3>Jalat</h3>"));
-        assert!(!first.contains(r#"rel="prev""#));
-        let (_, _, last) = get_from(lessons_app()?, "/lessons/single-whip", None).await?;
-        assert!(last.contains("To pass: send a video for review"));
-        assert!(!last.contains(r#"rel="next""#));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn unknown_lesson_renders_translated_404() -> TestResult {
-        let (status, _, body) = get_from(lessons_app()?, "/lessons/missing?lang=fi", None).await?;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(body.contains("<title>Sivua ei löydy ☯ Taiji-Timo</title>"));
         Ok(())
     }
 }

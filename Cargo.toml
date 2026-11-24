@@ -6,11 +6,16 @@ license = "MIT"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["tokio"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 dotenvy = "0.15.7"
+getrandom = { version = "0.3.4", default-features = false }
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname"] }
 maud = { version = "0.27.0", features = ["axum"] }
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "signal"] }
+sha2 = "0.10.9"
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 toml = "1.2.2"
 tower-http = { version = "0.7.1", features = ["compression-br", "compression-gzip", "fs", "set-header", "trace"] }
 tower-livereload = "0.10.3"

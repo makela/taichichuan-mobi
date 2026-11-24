@@ -57,8 +57,21 @@ is described at the top of `src/lessons.rs`, and `tests/lessons` has a made-up
 example. The server refuses to start if the lessons have mistakes, such as a
 movement in two lessons, and says what is wrong.
 
-For now the lessons are shown at `/lessons` in development mode only, as there
-are no member logins yet.
+### Members
+
+With `CONTENT_DIR` set, visitors can register and log in at `/register` and
+`/login` with a link sent by email; there are no passwords. Accounts, sessions
+and the lessons each member has passed are in an SQLite database
+(`DATABASE_URL`, tables in `migrations/`). The free lessons are open to everyone
+logged in; members take the rest in order, each opening when the one before it
+is passed, and passed lessons stay open. `/account` has logging out and
+deleting the account.
+
+For now all this runs in development mode only, as there are no payments yet.
+Without `SMTP_HOST` the emails aren't sent and the link is logged instead, and
+the account page has a button to start or end a membership for trying out.
+Lessons passed by a quiz or a video review can be marked practised there too
+until those are made.
 
 Files listed in `VERSIONED_FILES` (`src/assets.rs`) get a content hash in their
 URL and are cached for a year, so add new linked files there.

@@ -177,6 +177,61 @@ impl Lessons {
             .enumerate()
             .find(|(_, lesson)| lesson.slug == slug)
     }
+
+    /// Whether `learner` may open the lesson at `position`. Free lessons are
+    /// open to everyone logged in. Members take the others in order: a
+    /// lesson opens when the one before it is passed, and passed lessons
+    /// stay open.
+    #[must_use]
+    pub fn access(&self, position: usize, learner: Option<&Learner>) -> Access {
+        let Some(lesson) = self.0.get(position) else {
+            return Access::NeedsPrevious;
+        };
+        let Some(learner) = learner else {
+            return Access::NeedsLogin;
+        };
+        let done = learner.completed.contains(&lesson.slug);
+        if lesson.free {
+            return if done { Access::Done } else { Access::Open };
+        }
+        if !learner.member {
+            return Access::NeedsMembership;
+        }
+        let previous_done = position
+            .checked_sub(1)
+            .and_then(|previous| self.0.get(previous))
+            .is_none_or(|previous| learner.completed.contains(&previous.slug));
+        match (done, previous_done) {
+            (true, _) => Access::Done,
+            (false, true) => Access::Open,
+            (false, false) => Access::NeedsPrevious,
+        }
+    }
+}
+
+/// Who is opening a lesson, as far as access to it goes.
+pub struct Learner<'a> {
+    pub member: bool,
+    /// Slugs of the lessons passed.
+    pub completed: &'a HashSet<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Access {
+    Open,
+    /// Open, and passed already.
+    Done,
+    NeedsLogin,
+    NeedsMembership,
+    /// The lesson before it isn't passed yet.
+    NeedsPrevious,
+}
+
+impl Access {
+    #[must_use]
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Open | Self::Done)
+    }
 }
 
 impl Entry {
@@ -271,6 +326,49 @@ mod tests {
         assert!(!whip.free);
         assert_eq!(whip.title(Language::Fi), "Yksittäinen ruoska");
         assert!(lessons.find("missing").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn free_lessons_are_open_and_the_rest_go_in_order_for_members() -> TestResult {
+        use Access::{Done, NeedsMembership, NeedsPrevious, Open};
+        let lessons = Lessons::load(Path::new("tests/lessons"))?;
+        let access = |completed: &[&str], member: bool| {
+            let completed: HashSet<String> =
+                completed.iter().map(|slug| (*slug).to_string()).collect();
+            let learner = Learner {
+                member,
+                completed: &completed,
+            };
+            (0..4)
+                .map(|position| lessons.access(position, Some(&learner)))
+                .collect::<Vec<_>>()
+        };
+        // preparation and opening are free, single-whip isn't; there is no
+        // fourth lesson.
+        assert_eq!(
+            access(&[], false),
+            [Open, Open, NeedsMembership, NeedsPrevious]
+        );
+        assert_eq!(
+            access(&["opening"], false),
+            [Open, Done, NeedsMembership, NeedsPrevious]
+        );
+        assert_eq!(
+            access(&[], true),
+            [Open, Open, NeedsPrevious, NeedsPrevious]
+        );
+        assert_eq!(
+            access(&["opening"], true),
+            [Open, Done, Open, NeedsPrevious]
+        );
+        // Passed lessons stay open even if an earlier one isn't passed.
+        assert_eq!(
+            access(&["single-whip"], true),
+            [Open, Open, Done, NeedsPrevious]
+        );
+        assert_eq!(lessons.access(0, None), Access::NeedsLogin);
+        assert!(Open.is_open() && Done.is_open() && !NeedsPrevious.is_open());
         Ok(())
     }
 

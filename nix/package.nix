@@ -27,6 +27,7 @@ let
       ../Cargo.lock
       ../src
       ../dist
+      ../migrations
       ../tests
     ];
   };
