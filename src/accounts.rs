@@ -61,6 +61,8 @@ pub struct User {
     pub language: Language,
     /// Until when the membership is paid, as stored.
     pub member_until: Option<String>,
+    /// The Stripe customer of their membership payments, if they have paid.
+    pub stripe_customer_id: Option<String>,
 }
 
 impl User {
@@ -79,6 +81,7 @@ fn user_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<User> {
         email: row.try_get("email")?,
         language: Language::from_code(&language).unwrap_or(Language::En),
         member_until: row.try_get("member_until")?,
+        stripe_customer_id: row.try_get("stripe_customer_id")?,
     })
 }
 
@@ -249,6 +252,63 @@ impl Accounts {
             .bind(user_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn user_by_id(&self, id: i64) -> Result<Option<User>> {
+        sqlx::query("SELECT * FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(user_from_row)
+            .transpose()
+    }
+
+    pub async fn user_by_stripe_customer(&self, customer: &str) -> Result<Option<User>> {
+        sqlx::query("SELECT * FROM users WHERE stripe_customer_id = ?")
+            .bind(customer)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(user_from_row)
+            .transpose()
+    }
+
+    /// Records the user's Stripe subscription: an active one makes them a
+    /// member `until`, and an ended one ends the membership if it was the
+    /// subscription that paid for it.
+    pub async fn record_subscription(
+        &self,
+        user_id: i64,
+        customer: &str,
+        subscription: &str,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        match until {
+            Some(until) => {
+                sqlx::query(
+                    "UPDATE users SET member_until = ?, stripe_customer_id = ?,
+                     stripe_subscription_id = ? WHERE id = ?",
+                )
+                .bind(timestamp(until))
+                .bind(customer)
+                .bind(subscription)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE users SET member_until = NULL, stripe_subscription_id = NULL
+                     WHERE id = ? AND stripe_subscription_id = ?",
+                )
+                .bind(user_id)
+                .bind(subscription)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -454,6 +514,41 @@ mod tests {
         let user = accounts.user_by_email("a@b.fi").await?.ok_or("gone")?;
         assert!(user.is_member(time(17, 59)));
         assert!(!user.is_member(time(18, 0)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscriptions_set_the_membership_until_they_end() -> TestResult {
+        let accounts = accounts().await?;
+        let user = new_user(&accounts, "a@b.fi").await?;
+        accounts
+            .record_subscription(user.id, "cus_1", "sub_1", Some(time(18, 0)))
+            .await?;
+        let found = accounts
+            .user_by_stripe_customer("cus_1")
+            .await?
+            .ok_or("no customer")?;
+        assert_eq!(found.id, user.id);
+        assert!(found.is_member(time(17, 0)));
+
+        // An old subscription ending leaves the current one alone.
+        accounts
+            .record_subscription(user.id, "cus_1", "sub_0", None)
+            .await?;
+        assert!(
+            accounts
+                .user_by_id(user.id)
+                .await?
+                .ok_or("gone")?
+                .is_member(time(17, 0))
+        );
+        accounts
+            .record_subscription(user.id, "cus_1", "sub_1", None)
+            .await?;
+        let ended = accounts.user_by_id(user.id).await?.ok_or("gone")?;
+        assert!(!ended.is_member(time(17, 0)));
+        // The customer is kept, for receipts and joining again.
+        assert_eq!(ended.stripe_customer_id.as_deref(), Some("cus_1"));
         Ok(())
     }
 

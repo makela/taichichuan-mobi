@@ -81,7 +81,25 @@ that requires another opens when that one is finished. Practices are open to
 members at once, or once a given lesson is passed. `/account` has logging out
 and deleting the account.
 
-For now all this runs in development mode only, as there are no payments yet.
+Memberships are Stripe subscriptions, monthly or yearly. The account page sends
+members to Stripe's checkout page to pay, and to Stripe's customer portal to
+change or cancel; the membership lasts until the end of the paid period (plus a
+day's grace). Stripe tells the site about changes by webhooks to
+`/stripe/webhook`, and the site then asks Stripe for the subscription's state.
+Deleting an account deletes its Stripe customer, ending the payments. Stripe
+settings are listed in `.env.example`. In the Stripe dashboard:
+
+- a product with a monthly and a yearly recurring price;
+- a webhook endpoint at `<site>/stripe/webhook` for the events
+  `checkout.session.completed` and `customer.subscription.created`, `.updated`
+  and `.deleted`;
+- the customer portal, allowing cancelling and switching between the prices.
+
+To try payments in development, with test mode keys and the dev shell's Stripe
+CLI: `stripe listen --forward-to localhost:3000/stripe/webhook` prints the
+webhook secret to use, and test cards such as 4242 4242 4242 4242 pay.
+
+For now all this runs in development mode only.
 Without `SMTP_HOST` the emails aren't sent and the link is logged instead, and
 the account page has a button to start or end a membership for trying out.
 Lessons passed by a quiz or a video review can be marked practised there too

@@ -33,6 +33,7 @@
             just
             watchexec
             exiftool # for the pre-commit hook's photo location check
+            stripe-cli # `stripe listen` forwards test payments' webhooks to the dev server
           ];
           shellHook = ''
             git config core.hooksPath .githooks

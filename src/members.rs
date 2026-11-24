@@ -24,6 +24,7 @@ use tower_http::services::ServeFile;
 use crate::accounts::{self, Accounts, LinkKind, SESSION_LIFETIME, User};
 use crate::lessons::{Access, Course, Kind, Learner, Lesson, LessonId, Passing, Set};
 use crate::mail::{self, Encryption, Mailer};
+use crate::stripe::{self, Stripe, Webhook};
 use crate::{Language, LanguageQuery, Translations, layout, linked_markup, not_found};
 
 const SESSION_COOKIE: &str = "session";
@@ -42,6 +43,8 @@ pub struct Members {
     /// Development mode: cookies also over plain HTTP, and a button on the
     /// account page to start and end a membership.
     dev: bool,
+    /// Payments; without them, memberships can't be bought.
+    stripe: Option<Stripe>,
 }
 
 impl Members {
@@ -97,7 +100,41 @@ impl Members {
                 Mailer::smtp(&host, port, encryption, login).map_err(|error| error.to_string())?
             }
         };
+        let stripe = match setting("STRIPE_SECRET_KEY_FILE") {
+            None => {
+                tracing::info!("STRIPE_SECRET_KEY_FILE isn't set: memberships can't be bought");
+                None
+            }
+            Some(key_file) => {
+                let read = |name: &str, file: &str| {
+                    std::fs::read_to_string(file)
+                        .map(|text| text.trim().to_string())
+                        .map_err(|error| format!("{name} {file}: {error}"))
+                };
+                let required = |name: &str| setting(name).ok_or(format!("payments need {name}"));
+                let settings = stripe::Settings {
+                    api_url: setting("STRIPE_API_URL")
+                        .unwrap_or("https://api.stripe.com".to_string()),
+                    secret_key: read("STRIPE_SECRET_KEY_FILE", &key_file)?,
+                    webhook_secret: read(
+                        "STRIPE_WEBHOOK_SECRET_FILE",
+                        &required("STRIPE_WEBHOOK_SECRET_FILE")?,
+                    )?,
+                    monthly_price: required("STRIPE_PRICE_MONTHLY")?,
+                    yearly_price: required("STRIPE_PRICE_YEARLY")?,
+                    automatic_tax: crate::flag_enabled(setting("STRIPE_AUTOMATIC_TAX").as_deref()),
+                };
+                let stripe = Stripe::connect(settings).await?;
+                tracing::info!(
+                    monthly = %stripe.monthly.text(Language::En),
+                    yearly = %stripe.yearly.text(Language::En),
+                    "Memberships are paid by Stripe"
+                );
+                Some(stripe)
+            }
+        };
         Ok(Self {
+            stripe,
             course,
             accounts: Accounts::new(pool),
             mailer,
@@ -120,7 +157,11 @@ pub fn router(members: Arc<Members>) -> Router {
         .route("/lessons/{set}", get(set_page))
         .route("/lessons/{set}/{lesson}", get(lesson_page))
         .route("/lessons/{set}/{lesson}/complete", post(complete_lesson))
-        .route("/lessons/{set}/{lesson}/video", get(lesson_video));
+        .route("/lessons/{set}/{lesson}/video", get(lesson_video))
+        .route("/membership/checkout", post(checkout))
+        .route("/membership/welcome", get(welcome))
+        .route("/membership/manage", post(manage_membership))
+        .route("/stripe/webhook", post(stripe_webhook));
     let router = if members.dev {
         router.route("/account/dev-membership", post(dev_membership))
     } else {
@@ -568,9 +609,27 @@ async fn account_page(
             &html! {
                 h2 { (t.account_title) }
                 p { (t.logged_in_as) " " strong { (user.email) } }
-                p { (membership) }
                 form.email-form method="post" action=(href("/logout", language)) {
                     button type="submit" { (t.logout) }
+                }
+                h2 #membership { (t.membership_title) }
+                p { (membership) }
+                @if let Some(stripe) = &members.stripe {
+                    @if member && user.stripe_customer_id.is_some() {
+                        form.email-form method="post" action=(href("/membership/manage", language)) {
+                            button type="submit" { (t.manage_membership) }
+                        }
+                    } @else if !member {
+                        p { (t.membership_intro) }
+                        form.email-form method="post" action=(href("/membership/checkout", language)) {
+                            button type="submit" name="plan" value="monthly" {
+                                (t.join_monthly.replace("{price}", &stripe.monthly.text(language)))
+                            }
+                            button type="submit" name="plan" value="yearly" {
+                                (t.join_yearly.replace("{price}", &stripe.yearly.text(language)))
+                            }
+                        }
+                    }
                 }
                 @if members.dev {
                     form.email-form method="post" action=(href("/account/dev-membership", language)) {
@@ -626,6 +685,10 @@ async fn delete_account(
     if form.confirm.as_deref() != Some("yes") {
         return Ok(redirect("/account", visit.language));
     }
+    // Deleting the Stripe customer ends the membership's payments too.
+    if let (Some(stripe), Some(customer)) = (&members.stripe, &user.stripe_customer_id) {
+        stripe.delete_customer(customer).await.map_err(Failure)?;
+    }
     members.accounts.delete_user(user.id).await?;
     tracing::info!(user = user.id, "Deleted an account");
     let t = &visit.t;
@@ -660,6 +723,206 @@ async fn dev_membership(
     let until = (!user.is_member(now)).then(|| now + Duration::days(30));
     members.accounts.set_member_until(user.id, until).await?;
     Ok(redirect("/account", visit.language))
+}
+
+impl Members {
+    /// Fetches the subscription `id` from Stripe and updates its member.
+    async fn sync_subscription(&self, stripe: &Stripe, id: &str) -> Result<(), Failure> {
+        let subscription = stripe.subscription(id).await.map_err(Failure)?;
+        let user = match subscription.user_id() {
+            Some(user_id) => self.accounts.user_by_id(user_id).await?,
+            None => {
+                self.accounts
+                    .user_by_stripe_customer(&subscription.customer)
+                    .await?
+            }
+        };
+        let Some(user) = user else {
+            tracing::warn!(subscription = %subscription.id, "Subscription of no account");
+            return Ok(());
+        };
+        // A day's grace, so that a renewal arriving late doesn't lock the lessons.
+        let until = subscription
+            .period_end()
+            .filter(|_| subscription.is_active())
+            .and_then(|end| chrono::DateTime::from_timestamp(end, 0))
+            .map(|end| end + Duration::days(1));
+        self.accounts
+            .record_subscription(user.id, &subscription.customer, &subscription.id, until)
+            .await?;
+        tracing::info!(user = user.id, subscription = %subscription.id, status = %subscription.status, "Updated a membership");
+        Ok(())
+    }
+
+    /// A page saying the payment service can't be reached.
+    fn payment_unavailable(visit: &Visit) -> Response {
+        let t = &visit.t;
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            page_headers(),
+            page(
+                visit,
+                "/account",
+                t.membership_title,
+                &html! {
+                    h2 { (t.membership_title) }
+                    p.error role="alert" { (t.payment_unavailable) }
+                    p.lesson-nav { a href=(href("/account", visit.language)) { (t.account_title) } }
+                },
+            ),
+        )
+            .into_response()
+    }
+}
+
+#[derive(Deserialize)]
+struct PlanForm {
+    plan: String,
+}
+
+/// Starts buying a membership on Stripe's checkout page.
+async fn checkout(
+    State(members): State<Arc<Members>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+    Form(form): Form<PlanForm>,
+) -> Page {
+    let visit = members.visit(query, &headers).await?;
+    let language = visit.language;
+    let Some(user) = &visit.user else {
+        return Ok(redirect("/login", language));
+    };
+    let Some(stripe) = &members.stripe else {
+        return Ok(not_found(language));
+    };
+    let price = match form.plan.as_str() {
+        "monthly" => &stripe.monthly,
+        "yearly" => &stripe.yearly,
+        _ => return Ok(redirect("/account", language)),
+    };
+    if user.is_member(Utc::now()) {
+        return Ok(redirect("/account", language));
+    }
+    match stripe
+        .checkout(
+            price,
+            user.id,
+            &user.email,
+            user.stripe_customer_id.as_deref(),
+            language,
+            &members.site_url,
+        )
+        .await
+    {
+        Ok(url) => Ok(Redirect::to(&url).into_response()),
+        Err(error) => {
+            tracing::error!(%error, "Failed to start a checkout");
+            Ok(Members::payment_unavailable(&visit))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WelcomeQuery {
+    session: Option<String>,
+}
+
+/// Where Stripe's checkout returns after paying. The membership is updated
+/// from the checkout at once, without waiting for Stripe's webhook.
+async fn welcome(
+    State(members): State<Arc<Members>>,
+    welcome: Result<Query<WelcomeQuery>, QueryRejection>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    let visit = members.visit(query, &headers).await?;
+    let language = visit.language;
+    let Some(user) = &visit.user else {
+        return Ok(redirect("/login", language));
+    };
+    let session = welcome.ok().and_then(|Query(welcome)| welcome.session);
+    if let (Some(stripe), Some(session)) = (&members.stripe, session) {
+        match stripe.checkout_subscription(&session).await {
+            Ok(Some(subscription)) => members.sync_subscription(stripe, &subscription).await?,
+            Ok(None) => {}
+            // The webhook still updates the membership.
+            Err(error) => tracing::error!(%error, "Failed to look up a checkout"),
+        }
+    }
+    let member = members
+        .accounts
+        .user_by_id(user.id)
+        .await?
+        .is_some_and(|user| user.is_member(Utc::now()));
+    let t = &visit.t;
+    Ok((
+        page_headers(),
+        page(
+            &visit,
+            "/account",
+            t.welcome_title,
+            &html! {
+                h2 { (t.welcome_title) }
+                p { (if member { t.membership_active } else { t.membership_pending }) }
+                p.lesson-nav { a href=(href("/lessons", language)) { (t.to_lessons) } }
+            },
+        ),
+    )
+        .into_response())
+}
+
+/// Opens Stripe's customer portal, to change or cancel the membership.
+async fn manage_membership(
+    State(members): State<Arc<Members>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    let visit = members.visit(query, &headers).await?;
+    let language = visit.language;
+    let Some(user) = &visit.user else {
+        return Ok(redirect("/login", language));
+    };
+    let (Some(stripe), Some(customer)) = (&members.stripe, &user.stripe_customer_id) else {
+        return Ok(redirect("/account", language));
+    };
+    let return_url = format!("{}{}", members.site_url, href("/account", language));
+    match stripe.portal(customer, &return_url).await {
+        Ok(url) => Ok(Redirect::to(&url).into_response()),
+        Err(error) => {
+            tracing::error!(%error, "Failed to open the customer portal");
+            Ok(Members::payment_unavailable(&visit))
+        }
+    }
+}
+
+/// Stripe telling about a change in a subscription. A failure answers with
+/// an error, so that Stripe tries again later.
+async fn stripe_webhook(
+    State(members): State<Arc<Members>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(stripe) = &members.stripe else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let signature = headers
+        .get("stripe-signature")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    match stripe.webhook(&body, signature, Utc::now().timestamp()) {
+        Err(error) => {
+            tracing::warn!(%error, "Refused a Stripe webhook");
+            StatusCode::BAD_REQUEST.into_response()
+        }
+        Ok(Webhook::Ignored(kind)) => {
+            tracing::debug!(%kind, "Ignored a Stripe webhook");
+            StatusCode::OK.into_response()
+        }
+        Ok(Webhook::Subscription(id)) => match members.sync_subscription(stripe, &id).await {
+            Ok(()) => StatusCode::OK.into_response(),
+            Err(failure) => failure.into_response(),
+        },
+    }
 }
 
 /// The address of a set's page, or of a lesson's page with `lesson`.
@@ -733,7 +996,10 @@ impl Members {
     /// Why a locked lesson or set isn't open yet, with links to what opens it.
     fn lock_text(&self, t: &Translations, language: Language, access: Access) -> Markup {
         match access {
-            Access::NeedsMembership => html! { (t.needs_membership) },
+            Access::NeedsMembership => {
+                let join = format!("{}#membership", href("/account", language));
+                linked_markup(t.needs_membership, &[("join", join.as_str(), t.join_link)])
+            }
             Access::NeedsSet(set) => {
                 let Some(set) = self.course.sets().get(set) else {
                     return html! {};
@@ -1084,6 +1350,7 @@ mod tests {
     async fn members(
         dev: bool,
         outbox: &AsyncStubTransport,
+        stripe: Option<Stripe>,
     ) -> Result<Arc<Members>, Box<dyn std::error::Error>> {
         Ok(Arc::new(Members {
             course: Course::load(Path::new("tests/lessons"))?,
@@ -1092,18 +1359,20 @@ mod tests {
             from: mail::DEFAULT_FROM.parse()?,
             site_url: "https://example.test".to_string(),
             dev,
+            stripe,
         }))
     }
 
     async fn site(dev: bool) -> Result<Site, Box<dyn std::error::Error>> {
-        site_with(dev, AsyncStubTransport::new_ok()).await
+        site_with(dev, AsyncStubTransport::new_ok(), None).await
     }
 
     async fn site_with(
         dev: bool,
         outbox: AsyncStubTransport,
+        stripe: Option<Stripe>,
     ) -> Result<Site, Box<dyn std::error::Error>> {
-        let members = members(dev, &outbox).await?;
+        let members = members(dev, &outbox, stripe).await?;
         let app = crate::app(
             Path::new("dist"),
             dev,
@@ -1340,7 +1609,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_emails_can_be_asked_again_at_once() -> TestResult {
-        let site = site_with(false, AsyncStubTransport::new_error()).await?;
+        let site = site_with(false, AsyncStubTransport::new_error(), None).await?;
         // Twice: the failed link doesn't count as sent moments ago.
         for _ in 0..2 {
             let reply = site
@@ -1775,6 +2044,271 @@ mod tests {
                 assert!(action.starts_with('/'), "{uri}: {action}");
             }
         }
+        Ok(())
+    }
+
+    /// A stand-in for Stripe's API: it answers what the site asks, keeps the
+    /// requests, and has one subscription whose state the test sets.
+    #[derive(Default)]
+    struct FakeStripe {
+        requests: std::sync::Mutex<Vec<String>>,
+        subscription: std::sync::Mutex<serde_json::Value>,
+        failing: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeStripe {
+        fn requests(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .map(|requests| requests.clone())
+                .unwrap_or_default()
+        }
+
+        fn set_subscription(&self, user_id: i64, status: &str, period_end: i64) {
+            if let Ok(mut subscription) = self.subscription.lock() {
+                *subscription = serde_json::json!({
+                    "id": "sub_1",
+                    "customer": "cus_1",
+                    "status": status,
+                    "metadata": { "user_id": user_id.to_string() },
+                    "items": { "data": [{ "current_period_end": period_end }] },
+                });
+            }
+        }
+    }
+
+    async fn fake_stripe_api(
+        State(fake): State<Arc<FakeStripe>>,
+        method: axum::http::Method,
+        uri: axum::http::Uri,
+        body: String,
+    ) -> Response {
+        let path = uri.path().to_string();
+        if let Ok(mut requests) = fake.requests.lock() {
+            requests.push(format!("{method} {path} {body}"));
+        }
+        if fake.failing.load(std::sync::atomic::Ordering::Relaxed) {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        let json = match (method.as_str(), path.as_str()) {
+            ("GET", "/v1/prices/price_month") => serde_json::json!({
+                "id": "price_month", "unit_amount": 2500, "currency": "eur",
+                "recurring": { "interval": "month" },
+            }),
+            ("GET", "/v1/prices/price_year") => serde_json::json!({
+                "id": "price_year", "unit_amount": 25000, "currency": "eur",
+                "recurring": { "interval": "year" },
+            }),
+            ("POST", "/v1/checkout/sessions") => {
+                serde_json::json!({ "url": "https://checkout.stripe.test/pay" })
+            }
+            ("GET", "/v1/checkout/sessions/cs_test_1") => {
+                serde_json::json!({ "subscription": "sub_1" })
+            }
+            ("GET", "/v1/subscriptions/sub_1") => fake
+                .subscription
+                .lock()
+                .map(|subscription| subscription.clone())
+                .unwrap_or_default(),
+            ("POST", "/v1/billing_portal/sessions") => {
+                serde_json::json!({ "url": "https://billing.stripe.test/portal" })
+            }
+            ("DELETE", "/v1/customers/cus_1") => {
+                serde_json::json!({ "id": "cus_1", "deleted": true })
+            }
+            _ => return StatusCode::NOT_FOUND.into_response(),
+        };
+        axum::Json(json).into_response()
+    }
+
+    async fn site_with_stripe() -> Result<(Site, Arc<FakeStripe>), Box<dyn std::error::Error>> {
+        let fake = Arc::new(FakeStripe::default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let api = Router::new()
+            .fallback(fake_stripe_api)
+            .with_state(fake.clone());
+        tokio::spawn(async move { axum::serve(listener, api).await });
+        let stripe = Stripe::connect(stripe::Settings {
+            api_url: format!("http://{address}"),
+            secret_key: "sk_test".to_string(),
+            webhook_secret: "whsec_test".to_string(),
+            monthly_price: "price_month".to_string(),
+            yearly_price: "price_year".to_string(),
+            automatic_tax: false,
+        })
+        .await?;
+        let site = site_with(false, AsyncStubTransport::new_ok(), Some(stripe)).await?;
+        Ok((site, fake))
+    }
+
+    async fn webhook(
+        site: &Site,
+        payload: &str,
+        signature: &str,
+    ) -> Result<StatusCode, Box<dyn std::error::Error>> {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/stripe/webhook")
+            .header("stripe-signature", signature)
+            .body(Body::from(payload.to_string()))?;
+        Ok(site.app.clone().oneshot(request).await?.status())
+    }
+
+    #[tokio::test]
+    #[expect(clippy::too_many_lines, reason = "one membership from start to end")]
+    async fn memberships_are_bought_managed_and_ended_through_stripe() -> TestResult {
+        let (site, fake) = site_with_stripe().await?;
+        let session = site.register("ann@example.fi").await?;
+        let user = site
+            .members
+            .accounts
+            .user_by_email("ann@example.fi")
+            .await?
+            .ok_or("no user")?;
+
+        let reply = site.get("/account?lang=fi", Some(&session)).await?;
+        assert!(reply.body.contains(
+            r#"<button type="submit" name="plan" value="monthly">Liity: 25 € kuukaudessa</button>"#
+        ));
+        assert!(reply.body.contains(
+            r#"<button type="submit" name="plan" value="yearly">Liity: 250 € vuodessa</button>"#
+        ));
+        let reply = site
+            .get("/lessons/slow-set/single-whip?lang=en", Some(&session))
+            .await?;
+        assert!(reply.body.contains(r#"This lesson is for members. <a href="/account?lang=en#membership">Become a member</a>."#));
+
+        let reply = site
+            .post(
+                "/membership/checkout?lang=en",
+                Some(&session),
+                "plan=monthly",
+            )
+            .await?;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER);
+        assert_eq!(reply.location(), "https://checkout.stripe.test/pay");
+        let checkout = fake
+            .requests()
+            .into_iter()
+            .find(|request| request.starts_with("POST /v1/checkout/sessions"))
+            .ok_or("no checkout")?;
+        for part in [
+            "mode=subscription",
+            "line_items%5B0%5D%5Bprice%5D=price_month",
+            "customer_email=ann%40example.fi",
+            &format!("subscription_data%5Bmetadata%5D%5Buser_id%5D={}", user.id),
+            "success_url=https%3A%2F%2Fexample.test%2Fmembership%2Fwelcome%3Fsession%3D%7BCHECKOUT_SESSION_ID%7D%26lang%3Den",
+            "locale=en",
+            "allow_promotion_codes=true",
+        ] {
+            assert!(checkout.contains(part), "{part} not in {checkout}");
+        }
+
+        // Back from paying, the membership starts without waiting for Stripe's webhook.
+        let period_end = Utc::now().timestamp() + 30 * 24 * 3600;
+        fake.set_subscription(user.id, "active", period_end);
+        let reply = site
+            .get(
+                "/membership/welcome?session=cs_test_1&lang=en",
+                Some(&session),
+            )
+            .await?;
+        assert!(reply.body.contains("Your membership is active. Welcome!"));
+        let reply = site
+            .get("/lessons/slow-set/single-whip?lang=en", Some(&session))
+            .await?;
+        assert!(
+            reply
+                .body
+                .contains("opens when you have passed the one before it")
+        );
+        let reply = site.get("/account?lang=en", Some(&session)).await?;
+        assert!(reply.body.contains("Manage membership and payments"));
+        assert!(!reply.body.contains("Join for"));
+
+        let reply = site
+            .post("/membership/manage?lang=en", Some(&session), "")
+            .await?;
+        assert_eq!(reply.location(), "https://billing.stripe.test/portal");
+        assert!(
+            fake.requests()
+                .iter()
+                .any(|request| request.starts_with("POST /v1/billing_portal/sessions customer=cus_1&return_url=https%3A%2F%2Fexample.test%2Faccount%3Flang%3Den"))
+        );
+
+        // Canceling in the portal reaches the site by a webhook.
+        fake.set_subscription(user.id, "canceled", period_end);
+        let payload =
+            r#"{"type":"customer.subscription.deleted","data":{"object":{"id":"sub_1"}}}"#;
+        let now = Utc::now().timestamp();
+        let wrong = stripe::sign("whsec_other", payload.as_bytes(), now);
+        assert_eq!(
+            webhook(&site, payload, &wrong).await?,
+            StatusCode::BAD_REQUEST
+        );
+        assert!(
+            site.members
+                .accounts
+                .user_by_id(user.id)
+                .await?
+                .ok_or("gone")?
+                .is_member(Utc::now())
+        );
+        let signature = stripe::sign("whsec_test", payload.as_bytes(), now);
+        assert_eq!(webhook(&site, payload, &signature).await?, StatusCode::OK);
+        assert!(
+            !site
+                .members
+                .accounts
+                .user_by_id(user.id)
+                .await?
+                .ok_or("gone")?
+                .is_member(Utc::now())
+        );
+
+        // Deleting the account deletes the Stripe customer too.
+        site.post("/account/delete?lang=en", Some(&session), "confirm=yes")
+            .await?;
+        assert!(
+            fake.requests()
+                .iter()
+                .any(|request| request.starts_with("DELETE /v1/customers/cus_1"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stripe_failures_are_told_and_webhooks_retried() -> TestResult {
+        let (site, fake) = site_with_stripe().await?;
+        let session = site.register("ann@example.fi").await?;
+        fake.failing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let reply = site
+            .post(
+                "/membership/checkout?lang=en",
+                Some(&session),
+                "plan=yearly",
+            )
+            .await?;
+        assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            reply
+                .body
+                .contains("The payment service can't be reached right now.")
+        );
+
+        // Stripe tries a webhook again later when the site answers with an error.
+        let payload =
+            r#"{"type":"customer.subscription.updated","data":{"object":{"id":"sub_1"}}}"#;
+        let signature = stripe::sign("whsec_test", payload.as_bytes(), Utc::now().timestamp());
+        assert_eq!(
+            webhook(&site, payload, &signature).await?,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let ignored = r#"{"type":"invoice.paid","data":{"object":{"id":"in_1"}}}"#;
+        let signature = stripe::sign("whsec_test", ignored.as_bytes(), Utc::now().timestamp());
+        assert_eq!(webhook(&site, ignored, &signature).await?, StatusCode::OK);
         Ok(())
     }
 }
