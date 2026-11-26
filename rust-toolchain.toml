@@ -1,0 +1,9 @@
+# The Rust the flake builds and checks rust-web/ with and the dev shell has,
+# from oxalica's rust-overlay: the same version in all of the projects, so
+# that their builds share ~/.cargo-target and the Nix store's toolchain
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+# rust-src and rust-analyzer for editors; in the builds too, so that they
+# and the dev shell are one toolchain in the store
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]

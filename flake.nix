@@ -19,17 +19,20 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+        # rust-toolchain.toml's Rust: rustc, cargo, clippy, rustfmt and
+        # rust-analyzer, the same version as the other projects
+        rustOf = p: p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       with pkgs;
       {
-        packages.default = callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
+        packages.default = callPackage ./nix/package.nix { craneLib = (crane.mkLib pkgs).overrideToolchain rustOf; };
 
         # Runs the NixOS module in a virtual machine, see nix/test.nix
         checks.module = import ./nix/test.nix { inherit pkgs self; };
 
         devShells.default = mkShell {
           buildInputs = [
-            rust-bin.stable.latest.default
+            (rustOf pkgs)
             just
             watchexec
             exiftool # for the pre-commit hook's photo location check
