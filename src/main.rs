@@ -825,7 +825,7 @@ async fn index(
         ("master", "http://tungtaichi.com", t.master_link),
     ];
     let email_subject = urlencoding::encode(t.email_subject);
-    let mailto = format!("mailto:taichiwayfarer@gmail.com?subject={email_subject}");
+    let mailto = format!("mailto:taichitimo@gmail.com?subject={email_subject}");
     let booking_links = [("email", mailto.as_str(), t.email_link)];
     let page_url = |language: Language| format!("{site_url}/?lang={}", language.code());
 
@@ -1229,9 +1229,7 @@ mod tests {
     async fn index_encodes_email_subject() -> TestResult {
         let (_, _, body) = get("/?lang=fi", None).await?;
         assert!(
-            body.contains(
-                "mailto:taichiwayfarer@gmail.com?subject=Kiinnostusta%20taijiopetuksesta"
-            )
+            body.contains("mailto:taichitimo@gmail.com?subject=Kiinnostusta%20taijiopetuksesta")
         );
         Ok(())
     }

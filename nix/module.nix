@@ -9,7 +9,7 @@
 #       contentDir = "/srv/taichichuan-mobi-course";
 #       smtp = {
 #         host = "smtp.gmail.com";
-#         user = "taichiwayfarer@gmail.com";
+#         user = "taichitimo@gmail.com";
 #         passwordFile = "/var/lib/secrets/taichichuan-mobi/gmail-app-password";
 #       };
 #       stripe = {
@@ -99,7 +99,7 @@ let
 
         mailFrom = lib.mkOption {
           type = lib.types.str;
-          default = "Taiji-Timo <taichiwayfarer@gmail.com>";
+          default = "Taiji-Timo <taichitimo@gmail.com>";
           description = "Who the login emails are from (MAIL_FROM). With Gmail, the account's own address.";
         };
 

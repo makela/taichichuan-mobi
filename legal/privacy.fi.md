@@ -7,7 +7,7 @@ henkilötietoja.
 ## Rekisterinpitäjä
 
 Taiji-Timo, Y-tunnus 2212553-3\
-Sähköposti: taichiwayfarer@gmail.com
+Sähköposti: taichitimo@gmail.com
 
 ## Mitä tietoja ja miksi
 

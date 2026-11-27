@@ -66,4 +66,4 @@ oikeuksiasi kuluttajana.
 
 ## Yhteystiedot
 
-taichiwayfarer@gmail.com
+taichitimo@gmail.com

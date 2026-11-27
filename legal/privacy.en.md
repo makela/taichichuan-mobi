@@ -7,7 +7,7 @@ collects no personal data.
 ## Controller
 
 Taiji-Timo, business ID 2212553-3, Finland\
-Email: taichiwayfarer@gmail.com
+Email: taichitimo@gmail.com
 
 ## What data, and why
 

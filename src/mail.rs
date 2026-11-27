@@ -10,7 +10,7 @@ use crate::Language;
 use crate::accounts::{LINK_LIFETIME, LinkKind};
 
 /// Who the emails are from, by default.
-pub const DEFAULT_FROM: &str = "Taiji-Timo <taichiwayfarer@gmail.com>";
+pub const DEFAULT_FROM: &str = "Taiji-Timo <taichitimo@gmail.com>";
 
 /// How long sending one email may take before giving up.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

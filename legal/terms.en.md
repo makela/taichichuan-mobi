@@ -64,4 +64,4 @@ as a consumer.
 
 ## Contact
 
-taichiwayfarer@gmail.com
+taichitimo@gmail.com
