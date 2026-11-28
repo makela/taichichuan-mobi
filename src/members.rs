@@ -158,6 +158,7 @@ pub fn router(members: Arc<Members>) -> Router {
         .route("/login/confirm", get(confirm_page).post(confirm))
         .route("/logout", post(logout))
         .route("/account", get(account_page))
+        .route("/account/data", get(download_data))
         .route("/account/delete", post(delete_account))
         .route("/lessons", get(course_page))
         .route("/lessons/{set}", get(set_page))
@@ -681,6 +682,9 @@ async fn account_page(
                         }
                     }
                 }
+                h2 { (t.data_title) }
+                p { (t.data_info) }
+                p { a href=(href("/account/data", language)) download { (t.data_download) } }
                 h2 { (t.delete_title) }
                 p { (t.delete_info) }
                 form.email-form method="post" action=(href("/account/delete", language)) {
@@ -708,6 +712,43 @@ fn date(time: &str, language: Language) -> String {
         ),
         _ => date.to_string(),
     }
+}
+
+/// Everything stored about the member, as a JSON file to save: their right
+/// of access and to data portability, without having to ask. Payments are
+/// at Stripe, as the file says.
+async fn download_data(
+    State(members): State<Arc<Members>>,
+    query: Result<Query<LanguageQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Page {
+    let visit = members.visit(query, &headers).await?;
+    let Some(user) = &visit.user else {
+        return Ok(redirect("/login", visit.language));
+    };
+    let Some(mut data) = members.accounts.personal_data(user.id).await? else {
+        return Ok(redirect("/login", visit.language));
+    };
+    if let Some(data) = data.as_object_mut() {
+        data.insert(
+            "payments".into(),
+            serde_json::json!("Payments and invoices are kept by Stripe; see the privacy notice."),
+        );
+    }
+    let json = serde_json::to_string_pretty(&data).map_err(|error| Failure(error.to_string()))?;
+    tracing::info!(user = user.id, "Downloaded their data");
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"taichichuan-mobi-data.json\"",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        json,
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
@@ -1595,6 +1636,47 @@ mod tests {
             assert_eq!(reply.location(), "/lessons?lang=en");
             Ok(reply.session().ok_or("no session cookie")?)
         }
+    }
+
+    /// A member can download everything stored about them, and only they
+    #[tokio::test]
+    async fn downloads_a_members_own_data() -> TestResult {
+        let site = site(false).await?;
+        let reply = site.get("/account/data?lang=en", None).await?;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER);
+        assert_eq!(reply.location(), "/login?lang=en");
+
+        let session = site.register("anna@example.test").await?;
+        let user = site
+            .members
+            .accounts
+            .user_by_email("anna@example.test")
+            .await?
+            .ok_or("no user")?;
+        site.members
+            .accounts
+            .complete(user.id, "slow-set/opening", Utc::now())
+            .await?;
+        let page = site.get("/account?lang=en", Some(&session)).await?;
+        assert!(page.body.contains("Download your data"), "{}", page.body);
+
+        let reply = site.get("/account/data?lang=en", Some(&session)).await?;
+        assert_eq!(reply.status, StatusCode::OK);
+        let disposition = reply
+            .headers
+            .get(header::CONTENT_DISPOSITION)
+            .ok_or("no disposition")?;
+        assert!(disposition.to_str()?.starts_with("attachment"));
+        assert_eq!(
+            reply.headers.get(header::CACHE_CONTROL).ok_or("cached")?,
+            "no-store"
+        );
+        let data: serde_json::Value = serde_json::from_str(&reply.body)?;
+        assert_eq!(data["account"]["email"], "anna@example.test");
+        assert_eq!(data["lessons_passed"][0]["lesson"], "slow-set/opening");
+        assert_eq!(data["logged_in_browsers"].as_array().map(Vec::len), Some(1));
+        assert!(data["membership"]["paid_until"].is_null());
+        Ok(())
     }
 
     #[test]

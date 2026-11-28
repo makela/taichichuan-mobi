@@ -1,4 +1,4 @@
-Päivitetty 24.11.2026
+Päivitetty 28.11.2026
 
 Tämä seloste kertoo, mitä henkilötietoja taichichuan.mobi-sivuston Taiji-Timon
 oppitunnit käsittelevät, miksi, ja mitkä oikeutesi ovat. Pelkkä etusivu ei kerää
@@ -53,8 +53,8 @@ myydä tai käytetä markkinointiin.
 
 Sinulla on oikeus nähdä sinua koskevat tiedot, saada ne korjatuksi tai
 poistetuksi, rajoittaa tai vastustaa niiden käyttöä ja saada ne
-koneluettavassa muodossa. Voit poistaa tilisi itse; muissa asioissa lähetä
-sähköpostia.
+koneluettavassa muodossa. Voit ladata tietosi ja poistaa tilisi itse
+tilisivulla; muissa asioissa lähetä sähköpostia.
 
 Jos katsot, että tietojasi käsitellään lain vastaisesti, voit tehdä valituksen
 tietosuojavaltuutetun toimistolle, [tietosuoja.fi](https://tietosuoja.fi).

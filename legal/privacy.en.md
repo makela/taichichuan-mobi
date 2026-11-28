@@ -1,4 +1,4 @@
-Updated 24 November 2026
+Updated 28 November 2026
 
 This notice tells what personal data the Taiji-Timo lessons at
 taichichuan.mobi handle, why, and what your rights are. The front page alone
@@ -53,7 +53,8 @@ used for marketing.
 
 You have the right to see the data about you, to have it corrected or
 deleted, to restrict or object to its use, and to get it in a machine-readable
-form. You can delete your account yourself; for anything else, send an email.
+form. You can download your data and delete your account yourself, on the
+account page; for anything else, send an email.
 
 If you think your data is handled against the law, you can complain to the
 Office of the Data Protection Ombudsman in Finland,

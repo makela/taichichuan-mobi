@@ -322,6 +322,53 @@ impl Accounts {
         Ok(())
     }
 
+    /// Everything stored about `user_id`, for them to download (their right
+    /// of access and to data portability): the account, the membership,
+    /// the lessons passed and the browsers logged in. None if there's no
+    /// such account. Times are UTC, as stored.
+    pub async fn personal_data(&self, user_id: i64) -> Result<Option<serde_json::Value>> {
+        let Some(user) = sqlx::query("SELECT * FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let lessons: Vec<(String, String)> = sqlx::query_as(
+            "SELECT slug, completed_at FROM completed_lessons WHERE user_id = ?
+             ORDER BY completed_at, slug",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let logins: Vec<(String, String)> = sqlx::query_as(
+            "SELECT created_at, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(Some(serde_json::json!({
+            "account": {
+                "email": user.try_get::<String, _>("email")?,
+                "language": user.try_get::<String, _>("language")?,
+                "registered": user.try_get::<String, _>("created_at")?,
+            },
+            "membership": {
+                "paid_until": user.try_get::<Option<String>, _>("member_until")?,
+                "stripe_customer": user.try_get::<Option<String>, _>("stripe_customer_id")?,
+                "stripe_subscription": user.try_get::<Option<String>, _>("stripe_subscription_id")?,
+            },
+            "lessons_passed": lessons
+                .into_iter()
+                .map(|(lesson, passed)| serde_json::json!({ "lesson": lesson, "passed": passed }))
+                .collect::<Vec<_>>(),
+            "logged_in_browsers": logins
+                .into_iter()
+                .map(|(since, until)| serde_json::json!({ "since": since, "until": until }))
+                .collect::<Vec<_>>(),
+        })))
+    }
+
     /// The slugs of the lessons `user_id` has passed.
     pub async fn completed(&self, user_id: i64) -> Result<HashSet<String>> {
         let slugs: Vec<String> =
