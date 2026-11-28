@@ -809,7 +809,71 @@ async fn dev_membership(
     Ok(redirect("/account", visit.language))
 }
 
+/// How often unused accounts are looked for.
+pub const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_hours(24);
+
 impl Members {
+    /// Warns the members whose accounts nobody has used for nearly
+    /// [`accounts::INACTIVE_AFTER`], and deletes those warned a month ago
+    /// who haven't been back, as deleting on the account page does. Paid
+    /// memberships are left alone. Run every [`SWEEP_EVERY`]; an email or
+    /// a deletion that fails is tried again the next time.
+    pub async fn sweep_inactive(&self, now: chrono::DateTime<Utc>) -> Result<(), String> {
+        for user in self
+            .accounts
+            .to_warn(now)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let deletion = date(
+                &accounts::timestamp(now + accounts::WARNING_AHEAD),
+                user.language,
+            );
+            let login = format!("{}/login?lang={}", self.site_url, user.language.code());
+            let sent = match mail::inactivity_warning(
+                &self.from,
+                &user.email,
+                user.language,
+                &deletion,
+                &login,
+            ) {
+                Ok(message) => self.mailer.send(message).await,
+                Err(error) => Err(error),
+            };
+            match sent {
+                Ok(()) => {
+                    self.accounts
+                        .mark_warned(user.id, now)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tracing::info!(user = user.id, "Warned an unused account of its deletion");
+                }
+                Err(error) => {
+                    tracing::error!(user = user.id, %error, "Failed to warn an unused account");
+                }
+            }
+        }
+        for user in self
+            .accounts
+            .to_delete(now)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            if let (Some(stripe), Some(customer)) = (&self.stripe, &user.stripe_customer_id)
+                && let Err(error) = stripe.delete_customer(customer).await
+            {
+                tracing::error!(user = user.id, %error, "Failed to delete an unused account's Stripe customer");
+                continue;
+            }
+            self.accounts
+                .delete_user(user.id)
+                .await
+                .map_err(|e| e.to_string())?;
+            tracing::info!(user = user.id, "Deleted an unused account");
+        }
+        Ok(())
+    }
+
     /// Fetches the subscription `id` from Stripe and updates its member.
     async fn sync_subscription(&self, stripe: &Stripe, id: &str) -> Result<(), Failure> {
         let subscription = stripe.subscription(id).await.map_err(Failure)?;
@@ -1636,6 +1700,72 @@ mod tests {
             assert_eq!(reply.location(), "/lessons?lang=en");
             Ok(reply.session().ok_or("no session cookie")?)
         }
+    }
+
+    /// An account unused for nearly two years gets one warning, and is
+    /// deleted a month later; a paid membership keeps it, as does coming
+    /// back after the warning
+    #[tokio::test]
+    async fn warns_then_deletes_an_unused_account() -> TestResult {
+        let site = site(false).await?;
+        let accounts = &site.members.accounts;
+        let now = Utc::now();
+        let long_ago = now - accounts::INACTIVE_AFTER + accounts::WARNING_AHEAD - Duration::days(1);
+        let id = |email: &'static str| async move {
+            accounts
+                .user_by_email(email)
+                .await
+                .map(|user| user.map(|user| user.id))
+        };
+
+        site.register("gone@example.test").await?;
+        let gone = id("gone@example.test").await?.ok_or("no user")?;
+        accounts.set_last_seen(gone, long_ago).await?;
+        site.register("paying@example.test").await?;
+        let paying = id("paying@example.test").await?.ok_or("no user")?;
+        accounts.set_last_seen(paying, long_ago).await?;
+        accounts
+            .set_member_until(paying, Some(now + Duration::days(300)))
+            .await?;
+        let back_session = site.register("back@example.test").await?;
+        let back = id("back@example.test").await?.ok_or("no user")?;
+        accounts.set_last_seen(back, long_ago).await?;
+
+        let sent = site.outbox.messages().await.len();
+        site.members.sweep_inactive(now).await?;
+        let messages = site.outbox.messages().await;
+        let warnings: Vec<_> = messages[sent..]
+            .iter()
+            .map(|(envelope, raw)| (envelope.to().to_vec(), raw))
+            .collect();
+        assert_eq!(warnings.len(), 2, "gone and back, not paying");
+        assert!(
+            warnings
+                .iter()
+                .all(|(_, raw)| raw.contains("will be deleted"))
+        );
+        // Once only
+        site.members.sweep_inactive(now).await?;
+        assert_eq!(site.outbox.messages().await.len(), sent + 2);
+
+        // Back comes back, which keeps the account
+        let page = site.get("/account?lang=en", Some(&back_session)).await?;
+        assert_eq!(page.status, StatusCode::OK);
+
+        // Not before the warning's month is out
+        site.members
+            .sweep_inactive(now + Duration::days(29))
+            .await?;
+        assert!(id("gone@example.test").await?.is_some());
+        let later = now + accounts::WARNING_AHEAD + Duration::days(1);
+        site.members.sweep_inactive(later).await?;
+        assert!(id("gone@example.test").await?.is_none(), "deleted");
+        assert!(
+            id("paying@example.test").await?.is_some(),
+            "a member's kept"
+        );
+        assert!(id("back@example.test").await?.is_some(), "came back");
+        Ok(())
     }
 
     /// A member can download everything stored about them, and only they

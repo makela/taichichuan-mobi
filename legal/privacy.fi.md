@@ -11,7 +11,8 @@ Sähköposti: taichitimo@gmail.com
 
 ## Mitä tietoja ja miksi
 
-- **Tili:** sähköpostiosoitteesi, valitsemasi kieli ja rekisteröitymisaikasi.
+- **Tili:** sähköpostiosoitteesi, valitsemasi kieli, rekisteröitymisaikasi ja
+  milloin viimeksi käytit oppitunteja.
   Niitä käytetään kirjautumiseen sähköpostilinkeillä ja oppituntien
   tarjoamiseen. Peruste: sopimuksemme (tilisi ja käyttöehdot).
 - **Edistyminen:** mitkä oppitunnit olet läpäissyt ja milloin. Sitä käytetään
@@ -46,6 +47,9 @@ myydä tai käytetä markkinointiin.
   tilisi, minkä voit tehdä milloin tahansa tilisivulla. Poistaminen poistaa ne
   heti ja poistaa asiakastietosi Stripestä; vain kirjanpitolain vaatimat
   maksutiedot säilytetään lain vaatiman ajan.
+- Jos tiliä ei käytetä kahteen vuoteen, se poistetaan samalla tavalla, ellei
+  jäsenyys ole maksettu. Sähköposti kertoo siitä kuukautta ennen;
+  kirjautuminen säilyttää tilin.
 - Kirjautumislinkit poistetaan käytettyinä tai 30 minuutin kuluttua.
   Kirjautuminen päättyy 30 päivän kuluttua tai kun kirjaudut ulos.
 

@@ -101,7 +101,6 @@ pub fn login_link(
     kind: LinkKind,
     link: &str,
 ) -> Result<Message, String> {
-    let to: Mailbox = to.parse().map_err(|error| format!("{to}: {error}"))?;
     let minutes = LINK_LIFETIME.num_minutes();
     let (subject, greeting, intro, button, expiry, ignore) = match (language, kind) {
         (Language::En, LinkKind::Login) => (
@@ -137,7 +136,81 @@ pub fn login_link(
             "Jos et rekisteröitynyt, voit jättää tämän viestin huomiotta, eikä tiliä luoda.",
         ),
     };
-    let text = format!("{greeting}\n\n{intro}\n\n{link}\n\n{expiry} {ignore}\n\nTimo\n");
+    email(
+        from,
+        to,
+        language,
+        subject,
+        &[greeting, intro],
+        (button, link),
+        &[&format!("{expiry} {ignore}")],
+    )
+}
+
+/// The email warning that an account nobody has used for nearly two years
+/// will be deleted on `deletion_date`, as written in `language`, with a
+/// link to log in and keep it.
+pub fn inactivity_warning(
+    from: &Mailbox,
+    to: &str,
+    language: Language,
+    deletion_date: &str,
+    login_link: &str,
+) -> Result<Message, String> {
+    let (subject, greeting, intro, button, outro) = match language {
+        Language::En => (
+            "Your Taiji-Timo account will be deleted",
+            "Hi!",
+            format!(
+                "You haven't used your account at the Taiji-Timo lessons for almost two years. \
+                 So that your personal data isn't kept longer than needed, the account and your \
+                 progress will be deleted on {deletion_date}."
+            ),
+            "Log in to keep it",
+            "Logging in before then keeps your account. If you don't need it any more, you \
+             don't have to do anything.",
+        ),
+        Language::Fi => (
+            "Taiji-Timo-tilisi poistetaan",
+            "Hei!",
+            format!(
+                "Et ole käyttänyt tiliäsi Taiji-Timon oppitunneilla lähes kahteen vuoteen. \
+                 Jotta henkilötietojasi ei säilytettäisi tarpeettoman pitkään, tili ja \
+                 edistymisesi poistetaan {deletion_date}."
+            ),
+            "Kirjaudu ja säilytä tili",
+            "Kirjautuminen ennen sitä säilyttää tilisi. Jos et enää tarvitse tiliä, sinun ei \
+             tarvitse tehdä mitään.",
+        ),
+    };
+    email(
+        from,
+        to,
+        language,
+        subject,
+        &[greeting, &intro],
+        (button, login_link),
+        &[outro],
+    )
+}
+
+/// An email as they all are: paragraphs, a button with its link, more
+/// paragraphs and the signature, as HTML and as plain text.
+fn email(
+    from: &Mailbox,
+    to: &str,
+    language: Language,
+    subject: &str,
+    before: &[&str],
+    (button, link): (&str, &str),
+    after: &[&str],
+) -> Result<Message, String> {
+    let to: Mailbox = to.parse().map_err(|error| format!("{to}: {error}"))?;
+    let text = format!(
+        "{}\n\n{link}\n\n{}\n\nTimo\n",
+        before.join("\n\n"),
+        after.join("\n\n")
+    );
     let html = html! {
         (maud::DOCTYPE)
         html lang=(language.code()) {
@@ -148,14 +221,13 @@ pub fn login_link(
             }
             body style="margin:0;padding:24px 16px;background:#f8fafc;color:#182939;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5" {
                 div style="max-width:560px;margin:0 auto" {
-                    p { (greeting) }
-                    p { (intro) }
+                    @for paragraph in before { p { (paragraph) } }
                     p style="margin:24px 0" {
                         a href=(link) style="background:#182939;color:#f8fafc;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block" {
                             (button)
                         }
                     }
-                    p { (expiry) " " (ignore) }
+                    @for paragraph in after { p { (paragraph) } }
                     p { "Timo" }
                 }
             }

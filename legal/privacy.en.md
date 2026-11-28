@@ -11,8 +11,8 @@ Email: taichitimo@gmail.com
 
 ## What data, and why
 
-- **Account:** your email address, the language you chose, and when you
-  registered. They are used to log you in by emailed links and to give you the
+- **Account:** your email address, the language you chose, when you
+  registered, and when you last used the lessons. They are used to log you in by emailed links and to give you the
   lessons. Basis: the contract between us (your account and these terms).
 - **Progress:** which lessons you have passed, and when. It is used to open
   the lessons in order. Basis: contract.
@@ -46,6 +46,9 @@ used for marketing.
   account, which you can do at any time on the account page. Deleting removes
   them at once and deletes your customer data at Stripe; only the payment
   records that bookkeeping law requires are kept, for the time it requires.
+- If an account isn't used for two years, it is deleted in the same way,
+  unless a membership is paid. An email tells you a month before; logging in
+  keeps the account.
 - Login links are removed once used, or after 30 minutes. A login ends after
   30 days, or when you log out.
 

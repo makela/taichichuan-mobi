@@ -20,6 +20,14 @@ pub const LINK_LIFETIME: Duration = Duration::minutes(30);
 const LINK_INTERVAL: Duration = Duration::minutes(1);
 /// How long a browser stays logged in.
 pub const SESSION_LIFETIME: Duration = Duration::days(30);
+/// An account nobody has used for this long is deleted, unless a membership
+/// is paid: no need to keep the data any longer (the privacy notice says so).
+pub const INACTIVE_AFTER: Duration = Duration::days(730);
+/// The warning email goes this long before.
+pub const WARNING_AHEAD: Duration = Duration::days(30);
+/// When the site was last used is written at most this often, not on every
+/// page.
+const SEEN_EVERY: Duration = Duration::days(1);
 
 pub type Result<T> = std::result::Result<T, sqlx::Error>;
 
@@ -185,6 +193,13 @@ impl Accounts {
         .bind(timestamp(now))
         .execute(&mut *transaction)
         .await?;
+        sqlx::query(
+            "UPDATE users SET last_seen_at = ?, inactivity_warned_at = NULL WHERE email = ?",
+        )
+        .bind(timestamp(now))
+        .bind(&email)
+        .execute(&mut *transaction)
+        .await?;
         let user = sqlx::query("SELECT * FROM users WHERE email = ?")
             .bind(&email)
             .fetch_one(&mut *transaction)
@@ -223,9 +238,11 @@ impl Accounts {
         Ok(token)
     }
 
-    /// Who is logged in with the cookie secret `token`, if anyone.
+    /// Who is logged in with the cookie secret `token`, if anyone. Using the
+    /// site counts as being seen, and lifts a warning that the account is to
+    /// be deleted.
     pub async fn session_user(&self, token: &str, now: DateTime<Utc>) -> Result<Option<User>> {
-        sqlx::query(
+        let user = sqlx::query(
             "SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
              WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
         )
@@ -235,7 +252,73 @@ impl Accounts {
         .await?
         .as_ref()
         .map(user_from_row)
-        .transpose()
+        .transpose()?;
+        if let Some(user) = &user {
+            sqlx::query(
+                "UPDATE users SET last_seen_at = ?, inactivity_warned_at = NULL
+                 WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)",
+            )
+            .bind(timestamp(now))
+            .bind(user.id)
+            .bind(timestamp(now - SEEN_EVERY))
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(user)
+    }
+
+    /// The accounts to warn now that they'll be deleted: unused for nearly
+    /// [`INACTIVE_AFTER`], not warned yet, and without a paid membership.
+    pub async fn to_warn(&self, now: DateTime<Utc>) -> Result<Vec<User>> {
+        sqlx::query(
+            "SELECT * FROM users WHERE last_seen_at < ? AND inactivity_warned_at IS NULL
+             AND (member_until IS NULL OR member_until <= ?)",
+        )
+        .bind(timestamp(now - INACTIVE_AFTER + WARNING_AHEAD))
+        .bind(timestamp(now))
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(user_from_row)
+        .collect()
+    }
+
+    pub async fn mark_warned(&self, user_id: i64, now: DateTime<Utc>) -> Result<()> {
+        sqlx::query("UPDATE users SET inactivity_warned_at = ? WHERE id = ?")
+            .bind(timestamp(now))
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The accounts to delete now: unused for [`INACTIVE_AFTER`], warned at
+    /// least [`WARNING_AHEAD`] ago (so a warning sent late still gives its
+    /// full month), and without a paid membership.
+    pub async fn to_delete(&self, now: DateTime<Utc>) -> Result<Vec<User>> {
+        sqlx::query(
+            "SELECT * FROM users WHERE last_seen_at < ? AND inactivity_warned_at <= ?
+             AND (member_until IS NULL OR member_until <= ?)",
+        )
+        .bind(timestamp(now - INACTIVE_AFTER))
+        .bind(timestamp(now - WARNING_AHEAD))
+        .bind(timestamp(now))
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(user_from_row)
+        .collect()
+    }
+
+    /// For tests: as if `user_id` was last seen at `time`.
+    #[cfg(test)]
+    pub async fn set_last_seen(&self, user_id: i64, time: DateTime<Utc>) -> Result<()> {
+        sqlx::query("UPDATE users SET last_seen_at = ? WHERE id = ?")
+            .bind(timestamp(time))
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn end_session(&self, token: &str) -> Result<()> {
@@ -352,6 +435,8 @@ impl Accounts {
                 "email": user.try_get::<String, _>("email")?,
                 "language": user.try_get::<String, _>("language")?,
                 "registered": user.try_get::<String, _>("created_at")?,
+                "last_seen": user.try_get::<Option<String>, _>("last_seen_at")?,
+                "warned_of_deletion": user.try_get::<Option<String>, _>("inactivity_warned_at")?,
             },
             "membership": {
                 "paid_until": user.try_get::<Option<String>, _>("member_until")?,

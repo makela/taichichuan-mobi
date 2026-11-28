@@ -86,6 +86,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(_) => None,
     };
+    if let Some(members) = &members {
+        let members = members.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = members.sweep_inactive(chrono::Utc::now()).await {
+                    tracing::error!(%error, "Failed to look for unused accounts");
+                }
+                tokio::time::sleep(crate::members::SWEEP_EVERY).await;
+            }
+        });
+    }
     let app = app(Path::new(&static_dir), dev, &site_url, members);
     // Behind a reverse proxy, set HOST=127.0.0.1 to accept local connections only.
     let bind_addr = if host.contains(':') {
